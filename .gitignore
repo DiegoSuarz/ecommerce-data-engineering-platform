@@ -60,3 +60,17 @@ Thumbs.db
 # ------------------------------
 .vscode/
 .idea/
+
+# ------------------------------
+# ETL generated outputs
+# ------------------------------
+extracted_data.txt
+transformed_data.txt
+weblog.tar
+
+# ------------------------------
+# Spark generated model artifacts
+# ------------------------------
+*.model/
+part-*
+model.tar.gz
