@@ -150,3 +150,55 @@ def reconcile_staging_to_dw():
         "staging_amount": staging_amount,
         "dw_amount": dw_amount,
     }
+
+
+
+
+def reconcile_incremental_batch():
+    query = """
+        SELECT
+            (SELECT COUNT(*) FROM staging.orders),
+            (
+                SELECT COUNT(*)
+                FROM dw.fact_sales f
+                INNER JOIN staging.orders s
+                    ON f.order_id = s.order_id
+            ),
+            (SELECT COALESCE(SUM(amount), 0) FROM staging.orders),
+            (
+                SELECT COALESCE(SUM(f.amount), 0)
+                FROM dw.fact_sales f
+                INNER JOIN staging.orders s
+                    ON f.order_id = s.order_id
+            );
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+
+            (
+                staging_rows,
+                dw_rows,
+                staging_amount,
+                dw_amount,
+            ) = cursor.fetchone()
+
+    if staging_rows != dw_rows:
+        raise ValueError(
+            f"Incremental row reconciliation failed: "
+            f"staging={staging_rows}, dw={dw_rows}"
+        )
+
+    if staging_amount != dw_amount:
+        raise ValueError(
+            f"Incremental amount reconciliation failed: "
+            f"staging={staging_amount}, dw={dw_amount}"
+        )
+
+    return {
+        "staging_rows": staging_rows,
+        "dw_rows": dw_rows,
+        "staging_amount": staging_amount,
+        "dw_amount": dw_amount,
+    }
