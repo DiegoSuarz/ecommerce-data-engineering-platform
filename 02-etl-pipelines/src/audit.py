@@ -1,6 +1,5 @@
 from db import get_postgres_connection
 
-
 def start_etl_run(pipeline_name):
     query = """
         INSERT INTO audit.etl_run
@@ -71,6 +70,107 @@ def fail_etl_run(run_id, error_message):
                 (
                     error_message,
                     run_id,
+                ),
+            )
+
+        connection.commit()
+
+
+def get_watermark(
+    pipeline_name,
+    watermark_name,
+):
+    query = """
+        SELECT watermark_value
+        FROM audit.pipeline_watermark
+        WHERE pipeline_name = %s
+          AND watermark_name = %s;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    watermark_name,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return row[0]
+
+
+def initialize_watermark(
+    pipeline_name,
+    watermark_name,
+):
+    query = """
+        INSERT INTO audit.pipeline_watermark
+        (
+            pipeline_name,
+            watermark_name,
+            watermark_value
+        )
+        SELECT
+            %s,
+            %s,
+            COALESCE(MAX(order_id), 0)
+        FROM dw.fact_sales
+        ON CONFLICT (pipeline_name, watermark_name)
+        DO NOTHING
+        RETURNING watermark_value;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    watermark_name,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+        connection.commit()
+
+    if row is None:
+        return get_watermark(
+            pipeline_name,
+            watermark_name,
+        )
+
+    return row[0]
+
+
+def update_watermark(
+    pipeline_name,
+    watermark_name,
+    watermark_value,
+):
+    query = """
+        UPDATE audit.pipeline_watermark
+        SET
+            watermark_value = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE pipeline_name = %s
+          AND watermark_name = %s;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    watermark_value,
+                    pipeline_name,
+                    watermark_name,
                 ),
             )
 

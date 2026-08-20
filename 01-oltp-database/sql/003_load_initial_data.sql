@@ -5,7 +5,7 @@
 
 USE sales;
 
-LOAD DATA LOCAL INFILE '/docker-entrypoint-data/categories.csv'
+LOAD DATA INFILE '/var/lib/mysql-files/categories.csv'
 INTO TABLE categories
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n'
@@ -15,7 +15,7 @@ IGNORE 1 LINES
     category_name
 );
 
-LOAD DATA LOCAL INFILE '/docker-entrypoint-data/countries.csv'
+LOAD DATA INFILE '/var/lib/mysql-files/countries.csv'
 INTO TABLE countries
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n'
@@ -25,7 +25,7 @@ IGNORE 1 LINES
     country_name
 );
 
-LOAD DATA LOCAL INFILE '/docker-entrypoint-data/orders.csv'
+LOAD DATA INFILE '/var/lib/mysql-files/orders.csv'
 INTO TABLE orders
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n'

@@ -373,3 +373,339 @@ This module currently implements:
 - Unit testing.
 
 Incremental loading and external workflow orchestration are not part of the current Full Load implementation and will be introduced in later stages of the project.
+
+
+## Incremental Load
+
+The ETL pipeline supports incremental loading using a simple watermark strategy based on `orders.order_id`.
+
+The watermark represents the highest successfully processed order identifier.
+
+```text
+watermark = 300000
+```
+
+The incremental extraction reads only orders whose identifier is greater than the stored watermark:
+
+```sql
+SELECT
+    order_id,
+    order_date,
+    country_id,
+    category_id,
+    amount
+FROM orders
+WHERE order_id > %s
+ORDER BY order_id;
+```
+
+For example:
+
+```text
+Stored watermark
+300000
+
+New source rows
+300001
+300002
+300003
+300004
+300005
+
+Incremental extraction
+300001 → 300005
+```
+
+After a successful load, the watermark advances to the highest processed `order_id`.
+
+```text
+300000
+   ↓
+process 300001–300005
+   ↓
+SUCCESS
+   ↓
+300005
+```
+
+The watermark is updated only after the incremental batch has been loaded and validated successfully.
+
+If the pipeline fails before completion, the previous watermark remains unchanged so that the same batch can be safely processed again.
+
+## Watermark Metadata
+
+Incremental state is stored in:
+
+```text
+audit.pipeline_watermark
+```
+
+The table stores:
+
+```text
+pipeline_name
+watermark_name
+watermark_value
+updated_at
+```
+
+For the current incremental pipeline:
+
+```text
+pipeline_name   = incremental_load
+watermark_name  = orders_order_id
+```
+
+The watermark is initialized automatically when the incremental pipeline runs for the first time.
+
+If no watermark exists, the pipeline reads:
+
+```sql
+MAX(order_id)
+FROM dw.fact_sales
+```
+
+and uses the current Data Warehouse state as the initial watermark.
+
+This allows the incremental pipeline to start immediately after a successful Full Load without manual watermark initialization.
+
+## Incremental Staging
+
+During Full Load, `staging.orders` contains the complete source dataset.
+
+During Incremental Load, the same table acts as a temporary staging area for only the current incremental batch.
+
+```text
+Full Load
+staging.orders
+→ 300000 rows
+
+Incremental Load
+staging.orders
+→ current batch only
+```
+
+For example:
+
+```text
+watermark = 300010
+
+new orders:
+300011
+300012
+300013
+300014
+300015
+
+staging.orders:
+300011 → 300015
+```
+
+The staging table is truncated before each incremental batch is loaded.
+
+## Incremental Data Warehouse Load
+
+The incremental pipeline does not rebuild the complete Data Warehouse.
+
+Only new dimension values and fact rows are inserted.
+
+For the Date Dimension:
+
+```text
+new order dates
+      ↓
+build date dimension rows
+      ↓
+INSERT
+ON CONFLICT DO NOTHING
+```
+
+For the Sales Fact table:
+
+```text
+staging.orders
+      ↓
+dimension lookups
+      ↓
+dim_date
+dim_country
+dim_category
+      ↓
+fact_sales
+```
+
+Existing fact rows are protected using:
+
+```sql
+ON CONFLICT (order_id)
+DO NOTHING;
+```
+
+This provides additional idempotency protection during retries.
+
+## Incremental Reconciliation
+
+Each incremental batch is reconciled between staging and the Data Warehouse.
+
+The pipeline validates:
+
+```text
+staging row count
+vs
+loaded DW row count
+
+staging amount total
+vs
+loaded DW amount total
+```
+
+The reconciliation compares only the orders included in the current staging batch.
+
+## No-Op Execution
+
+If no new source rows exist:
+
+```text
+watermark = 300015
+MAX(source order_id) = 300015
+```
+
+the pipeline processes zero rows and completes successfully.
+
+Example:
+
+```text
+rows_extracted = 0
+rows_loaded    = 0
+status         = SUCCESS
+```
+
+The watermark remains unchanged.
+
+A no-op execution is considered a valid successful pipeline run, not an error.
+
+## Failure and Retry Behavior
+
+The incremental pipeline was tested with controlled failures.
+
+Example:
+
+```text
+watermark = 300010
+
+source batch:
+300011 → 300015
+
+staging load
+      ↓
+controlled failure
+      ↓
+status = FAILED
+      ↓
+watermark remains 300010
+```
+
+After removing the failure and executing the pipeline again:
+
+```text
+watermark = 300010
+      ↓
+same batch is extracted again
+      ↓
+300011 → 300015
+      ↓
+SUCCESS
+      ↓
+watermark = 300015
+```
+
+This behavior prevents data loss when an incremental execution fails.
+
+## Automated Tests
+
+The incremental pipeline includes automated tests with `pytest`.
+
+The test suite validates:
+
+- successful execution when no new data exists;
+- watermark advancement after a successful incremental batch;
+- watermark preservation when the pipeline fails.
+
+The full ETL test suite currently contains seven tests:
+
+```text
+4 transformation tests
+3 incremental pipeline tests
+```
+
+Run all tests with:
+
+```bash
+pytest -v 02-etl-pipelines/tests
+```
+
+## Running the Incremental Pipeline
+
+After the infrastructure is initialized and a Full Load has been completed:
+
+```bash
+python 02-etl-pipelines/src/incremental_load.py
+```
+
+The pipeline automatically:
+
+1. Starts an audit run.
+2. Reads or initializes the watermark.
+3. Extracts only new orders.
+4. Loads the incremental staging batch.
+5. Runs staging Data Quality checks.
+6. Loads new Date Dimension records.
+7. Resolves dimension lookups.
+8. Loads new Sales Fact records.
+9. Runs Data Warehouse quality checks.
+10. Reconciles the incremental batch.
+11. Updates the watermark only after success.
+12. Completes the audit run.
+
+## Simple Watermark Limitations
+
+The current incremental strategy uses:
+
+```text
+orders.order_id
+```
+
+as a simple high-water mark.
+
+This approach assumes that newly created orders receive monotonically increasing identifiers.
+
+It supports:
+
+```text
+✓ consecutive IDs
+✓ non-consecutive IDs
+✓ gaps between IDs
+```
+
+Example:
+
+```text
+300016
+300020
+300035
+```
+
+All three rows are correctly extracted if the current watermark is `300015`.
+
+However, the current strategy does not safely detect:
+
+```text
+✗ new rows inserted with an ID lower than the watermark
+✗ updates to previously processed orders
+✗ deleted source rows
+✗ random or non-monotonic identifiers
+```
+
+A future version of the project will introduce a composite watermark based on a modification timestamp and `order_id`.
+
+A later evolution will introduce Change Data Capture (CDC) to capture inserts, updates, and deletes more comprehensively.

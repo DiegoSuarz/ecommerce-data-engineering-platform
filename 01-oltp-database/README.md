@@ -69,37 +69,39 @@ The analytical `dateid` was converted back into the real order date before creat
 
 ## Database Initialization
 
-Database and table creation are versioned through SQL scripts:
+The OLTP database is initialized automatically by the official MySQL Docker entrypoint.
+
+The initialization scripts are versioned in:
 
 ```text
 sql/
 ├── 001_create_database.sql
 ├── 002_create_tables.sql
-└── 003_load_initial_data.sql
+├── 003_load_initial_data.sql
+└── 004_insert_incremental_test_data.sql
 ```
 
-The first two scripts are automatically executed by the MySQL Docker entrypoint when a new database volume is initialized.
+When the MySQL container starts with a new database volume, Docker automatically executes the first three initialization scripts in order:
 
-The initial dataset is loaded separately through the controlled load script.
-
-## Initial Data Load
-
-Run:
-
-```bash
-./01-oltp-database/scripts/load_initial_data.sh
+```text
+Docker Compose
+      │
+      ▼
+MySQL Container
+      │
+      ├── Create database and application user
+      │
+      ├── 001_create_database.sql
+      ├── 002_create_tables.sql
+      └── 003_load_initial_data.sql
+                  │
+                  ▼
+             Seed Dataset
 ```
 
-The script:
+The initialization process creates the `sales` database, creates the OLTP tables, provisions the application user, and loads the initial dataset.
 
-1. Loads configuration from `.env`.
-2. Checks the current state of all OLTP tables.
-3. Loads the seed dataset only when all tables are empty.
-4. Validates the expected initial row counts.
-5. Prevents duplicate initialization.
-6. Stops when a partial data state is detected.
-
-Expected initial counts:
+The expected initial row counts are:
 
 ```text
 categories = 5
@@ -107,54 +109,63 @@ countries  = 56
 orders     = 300000
 ```
 
-These counts validate only the initial bootstrap. The `orders` table is expected to grow after initialization.
+The initialization scripts are executed only when MySQL initializes a new database volume. Restarting an existing container does not reload the seed dataset.
+
+### Incremental Test Data
+
+`004_insert_incremental_test_data.sql` is intentionally excluded from the automatic Docker initialization process.
+
+It contains additional records used to test incremental ETL behavior and should only be executed explicitly when required during development or testing.
 
 ## Application User
 
-The application user is provisioned separately:
+The MySQL application user is provisioned automatically by the official MySQL Docker entrypoint using the environment variables defined in `.env`.
 
-```bash
-./01-oltp-database/scripts/provision_app_user.sh
-```
-
-The user receives only the required DML permissions on the `sales` database:
+The relevant configuration is:
 
 ```text
-SELECT
-INSERT
-UPDATE
-DELETE
+MYSQL_DATABASE
+MYSQL_USER
+MYSQL_PASSWORD
 ```
-
-Administrative and schema modification privileges are not granted.
 
 Database credentials are stored in the local `.env` file and are not committed to Git.
 
+The application user is intended for application and ETL connectivity to the `sales` database.
+
 ## Running the Module
 
-From the repository root:
+From the repository root, create the local environment file if it does not already exist:
+
+```bash
+cp .env.example .env
+```
+
+Configure the required credentials in `.env`, then start MySQL:
 
 ```bash
 docker compose up -d mysql
 ```
 
-Load the initial dataset:
+On the first startup with a new database volume, Docker automatically:
 
-```bash
-./01-oltp-database/scripts/load_initial_data.sh
-```
+1. Initializes MySQL.
+2. Creates the `sales` database.
+3. Creates the application user.
+4. Creates the OLTP tables.
+5. Loads the initial dataset.
 
-Provision the application user:
+No host-side Bash initialization scripts are required.
 
-```bash
-./01-oltp-database/scripts/provision_app_user.sh
-```
-
-Check the container:
+Check the container status:
 
 ```bash
 docker compose ps
 ```
+
+The MySQL service is exposed through the host port configured by `MYSQL_PORT`.
+
+Because the initialization is handled inside Docker, the same setup can be used from Linux, WSL2, macOS, or Windows with Docker Desktop.
 
 ## Validation
 
@@ -172,11 +183,13 @@ orphan countries  0
 orphan categories 0
 ```
 
-The initial load was also executed multiple times to verify idempotent behavior.
+These values represent the initial seed dataset.
+The orders table is expected to grow after initialization as new transactional and incremental test data is introduced.
+
 
 ## Data Warehouse Lineage
 
-This OLTP model will serve as the source for the PostgreSQL dimensional warehouse:
+This OLTP model serves as the operational source for the PostgreSQL dimensional Data Warehouse:
 
 ```text
 MySQL OLTP
@@ -186,6 +199,8 @@ MySQL OLTP
 └── orders
       ├── order_date ───► DimDate
       └─────────────────► FactSales
+
 ```
 
-The date dimension will be generated by the ETL process from the operational `order_date`.
+The Date Dimension is generated by the ETL process from the operational order_date.
+The ETL supports both Full Load and incremental loading strategies.

@@ -4,19 +4,23 @@ services:
     container_name: ecommerce-mysql
     restart: unless-stopped
 
-    command: --local-infile=1
-
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
 
     ports:
       - "${MYSQL_PORT}:3306"
 
     volumes:
       - mysql_data:/var/lib/mysql
+
       - ./01-oltp-database/sql/001_create_database.sql:/docker-entrypoint-initdb.d/001_create_database.sql:ro
       - ./01-oltp-database/sql/002_create_tables.sql:/docker-entrypoint-initdb.d/002_create_tables.sql:ro
-      - ./01-oltp-database/data:/docker-entrypoint-data:ro
+      - ./01-oltp-database/sql/003_load_initial_data.sql:/docker-entrypoint-initdb.d/003_load_initial_data.sql:ro
+
+      - ./01-oltp-database/data:/var/lib/mysql-files
 
   postgres:
     image: postgres:16
