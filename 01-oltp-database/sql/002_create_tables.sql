@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS orders
     country_id  INT UNSIGNED NOT NULL,
     category_id INT UNSIGNED NOT NULL,
     amount      DECIMAL(12,2) NOT NULL,
+    updated_at TIMESTAMP(6)   NOT NULL
+        DEFAULT CURRENT_TIMESTAMP(6)
+        ON UPDATE CURRENT_TIMESTAMP(6),
 
     CONSTRAINT pk_orders
         PRIMARY KEY (order_id),
@@ -53,5 +56,6 @@ CREATE TABLE IF NOT EXISTS orders
 
     INDEX ix_orders_order_date (order_date),
     INDEX ix_orders_country_id (country_id),
-    INDEX ix_orders_category_id (category_id)
+    INDEX ix_orders_category_id (category_id),
+    INDEX ix_orders_updated_at_order_id (updated_at, order_id)
 );

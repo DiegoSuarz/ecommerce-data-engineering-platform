@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from db import get_postgres_connection
 
 def start_etl_run(pipeline_name):
@@ -81,7 +82,9 @@ def get_watermark(
     watermark_name,
 ):
     query = """
-        SELECT watermark_value
+        SELECT
+            watermark_timestamp,
+            watermark_order_id
         FROM audit.pipeline_watermark
         WHERE pipeline_name = %s
           AND watermark_name = %s;
@@ -102,62 +105,78 @@ def get_watermark(
     if row is None:
         return None
 
-    return row[0]
+    return row[0], row[1]
 
 
 def initialize_watermark(
-    pipeline_name,
-    watermark_name,
+        pipeline_name,
+        watermark_name,
 ):
-    query = """
+
+    watermark_timestamp = datetime.min.replace(
+        tzinfo=timezone.utc
+    )
+    watermark_order_id = 0
+
+    select_query = """
+        SELECT
+            source_updated_at,
+            order_id
+        FROM dw.fact_sales
+        ORDER BY
+            source_updated_at DESC,
+            order_id DESC
+        LIMIT 1;
+    """
+    insert_query = """
         INSERT INTO audit.pipeline_watermark
         (
             pipeline_name,
             watermark_name,
-            watermark_value
+            watermark_timestamp,
+            watermark_order_id
         )
-        SELECT
-            %s,
-            %s,
-            COALESCE(MAX(order_id), 0)
-        FROM dw.fact_sales
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (pipeline_name, watermark_name)
-        DO NOTHING
-        RETURNING watermark_value;
+        DO NOTHING;
     """
 
     with get_postgres_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(select_query)
+            row = cursor.fetchone()
+            if row is not None:
+                watermark_timestamp = row[0]
+                watermark_order_id = row[1]
             cursor.execute(
-                query,
+                insert_query,
                 (
                     pipeline_name,
                     watermark_name,
+                    watermark_timestamp,
+                    watermark_order_id,
                 ),
             )
-
-            row = cursor.fetchone()
-
         connection.commit()
 
-    if row is None:
-        return get_watermark(
-            pipeline_name,
-            watermark_name,
-        )
-
-    return row[0]
+    watermark = get_watermark(
+        pipeline_name,
+        watermark_name,
+    )
+    return watermark
 
 
 def update_watermark(
     pipeline_name,
     watermark_name,
-    watermark_value,
+    watermark_timestamp,
+    watermark_order_id,
 ):
     query = """
         UPDATE audit.pipeline_watermark
         SET
-            watermark_value = %s,
+            watermark_timestamp = %s,
+            watermark_order_id = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE pipeline_name = %s
           AND watermark_name = %s;
@@ -168,7 +187,8 @@ def update_watermark(
             cursor.execute(
                 query,
                 (
-                    watermark_value,
+                    watermark_timestamp,
+                    watermark_order_id,
                     pipeline_name,
                     watermark_name,
                 ),
