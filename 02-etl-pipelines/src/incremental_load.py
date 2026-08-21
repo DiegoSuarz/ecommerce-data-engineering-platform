@@ -25,7 +25,8 @@ from transform import (
 
 
 PIPELINE_NAME = "incremental_load"
-WATERMARK_NAME = "orders_order_id"
+WATERMARK_NAME = "orders_updated_at_order_id"
+
 
 logger = get_logger(PIPELINE_NAME)
 
@@ -39,34 +40,44 @@ def run_incremental_load():
     )
 
     try:
-        current_watermark = get_watermark(
+        watermark = get_watermark(
             PIPELINE_NAME,
             WATERMARK_NAME,
         )
 
-        if current_watermark is None:
-            current_watermark = initialize_watermark(
+        if watermark is None:
+            watermark = initialize_watermark(
                 PIPELINE_NAME,
                 WATERMARK_NAME,
             )
 
+
             logger.info(
-                "Watermark initialized automatically. value=%s",
-                current_watermark,
+                "Composite watermark initialized automatically. "
+                "timestamp=%s order_id=%s",
+                watermark[0],
+                watermark[1],
             )
 
-        logger.info(
-            "Current watermark=%s",
-            current_watermark,
+        watermark_timestamp, watermark_order_id = (
+            watermark
         )
+        logger.info(
+            "Current composite watermark: "
+            "timestamp=%s order_id=%s",
+            watermark_timestamp,
+            watermark_order_id,
+        )
+
+        orders_batches = extract_incremental_orders(
+                watermark_timestamp,
+                watermark_order_id,
+                 batch_size=10000,
+            )
 
         loaded, new_watermark = load_incremental_orders(
-            extract_incremental_orders(
-                current_watermark,
-                batch_size=10000,
+                    orders_batches
             )
-        )
-
         logger.info(
             "Incremental staging rows=%s",
             loaded,
@@ -87,6 +98,10 @@ def run_incremental_load():
 
             return
 
+        new_watermark_timestamp, new_watermark_order_id = (
+            new_watermark
+        )
+
         run_staging_quality_checks()
 
         dates = extract_distinct_order_dates()
@@ -102,7 +117,8 @@ def run_incremental_load():
         update_watermark(
             PIPELINE_NAME,
             WATERMARK_NAME,
-            new_watermark,
+            new_watermark_timestamp,
+            new_watermark_order_id,
         )
 
         complete_etl_run(
@@ -114,9 +130,11 @@ def run_incremental_load():
 
         logger.info(
             "Incremental load completed successfully. "
-            "run_id=%s watermark=%s rows=%s",
+            "run_id=%s watermark_timestamp=%s "
+            "watermark_order_id=%s rows=%s",
             run_id,
-            new_watermark,
+            new_watermark_timestamp,
+            new_watermark_order_id,
             loaded,
         )
 

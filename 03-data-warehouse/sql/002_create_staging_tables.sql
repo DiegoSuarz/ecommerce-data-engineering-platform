@@ -21,5 +21,6 @@ CREATE TABLE IF NOT EXISTS staging.orders
     order_date  DATE NOT NULL,
     country_id  INTEGER NOT NULL,
     category_id INTEGER NOT NULL,
-    amount      NUMERIC(12,2) NOT NULL
+    amount      NUMERIC(12,2) NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL
 );

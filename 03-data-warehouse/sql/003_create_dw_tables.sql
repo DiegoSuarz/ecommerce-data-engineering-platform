@@ -65,12 +65,13 @@ CREATE TABLE IF NOT EXISTS dw.dim_country
 
 CREATE TABLE IF NOT EXISTS dw.fact_sales
 (
-    sales_key    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    order_id     BIGINT NOT NULL UNIQUE,
-    date_key     INTEGER NOT NULL,
-    country_key  BIGINT NOT NULL,
-    category_key BIGINT NOT NULL,
-    amount       NUMERIC(12,2) NOT NULL,
+    sales_key           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id            BIGINT NOT NULL UNIQUE,
+    date_key            INTEGER NOT NULL,
+    country_key         BIGINT NOT NULL,
+    category_key        BIGINT NOT NULL,
+    amount              NUMERIC(12,2) NOT NULL,
+    source_updated_at   TIMESTAMPTZ NOT NULL,
 
     CONSTRAINT fk_fact_sales_date
         FOREIGN KEY (date_key)
@@ -100,3 +101,6 @@ CREATE INDEX IF NOT EXISTS ix_fact_sales_country_key
 
 CREATE INDEX IF NOT EXISTS ix_fact_sales_category_key
     ON dw.fact_sales (category_key);
+
+CREATE INDEX IF NOT EXISTS ix_fact_sales_source_updated_at_order_id
+ON dw.fact_sales (source_updated_at, order_id);

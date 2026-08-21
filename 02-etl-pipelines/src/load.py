@@ -48,9 +48,10 @@ def load_orders(order_batches):
             order_date,
             country_id,
             category_id,
-            amount
+            amount,
+            updated_at
         )
-        VALUES (%s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s);
     """
 
     total_loaded = 0
@@ -167,14 +168,16 @@ def load_fact_sales():
             date_key,
             country_key,
             category_key,
-            amount
+            amount,
+            source_updated_at
         )
         SELECT
             o.order_id,
             d.date_key,
             c.country_key,
             cat.category_key,
-            o.amount
+            o.amount,
+            o.updated_at
         FROM staging.orders o
 
         INNER JOIN dw.dim_date d
@@ -208,13 +211,14 @@ def load_incremental_orders(order_batches):
             order_date,
             country_id,
             category_id,
-            amount
+            amount,
+            updated_at
         )
-        VALUES (%s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s);
     """
 
     total_loaded = 0
-    max_order_id = None
+    max_watermark = None
 
     with get_postgres_connection() as connection:
         with connection.cursor() as cursor:
@@ -234,15 +238,16 @@ def load_incremental_orders(order_batches):
 
                 total_loaded += len(batch)
 
-                batch_max_order_id = max(
-                    row[0] for row in batch
+                batch_max_watermark = max(
+                    (row[5], row[0])
+                    for row in batch
                 )
 
                 if (
-                    max_order_id is None
-                    or batch_max_order_id > max_order_id
+                    max_watermark is None
+                    or batch_max_watermark > max_watermark
                 ):
-                    max_order_id = batch_max_order_id
+                    max_watermark = batch_max_watermark
 
                 logger.info(
                     "Incremental orders batch %s loaded: "
@@ -254,7 +259,7 @@ def load_incremental_orders(order_batches):
 
         connection.commit()
 
-    return total_loaded, max_order_id
+    return total_loaded, max_watermark
 
 
 def load_incremental_dim_date(rows):
@@ -292,14 +297,16 @@ def load_incremental_fact_sales():
             date_key,
             country_key,
             category_key,
-            amount
+            amount,
+            source_updated_at
         )
         SELECT
             o.order_id,
             d.date_key,
             c.country_key,
             cat.category_key,
-            o.amount
+            o.amount,
+            o.updated_at
         FROM staging.orders o
 
         INNER JOIN dw.dim_date d
@@ -312,7 +319,13 @@ def load_incremental_fact_sales():
             ON o.category_id = cat.category_id
 
         ON CONFLICT (order_id)
-        DO NOTHING;
+        DO UPDATE
+        SET
+            date_key = EXCLUDED.date_key,
+            country_key = EXCLUDED.country_key,
+            category_key = EXCLUDED.category_key,
+            amount = EXCLUDED.amount,
+            source_updated_at = EXCLUDED.source_updated_at;
     """
 
     with get_postgres_connection() as connection:

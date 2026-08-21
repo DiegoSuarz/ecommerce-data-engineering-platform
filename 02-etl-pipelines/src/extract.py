@@ -50,7 +50,8 @@ def extract_orders(batch_size=10000):
             order_date,
             country_id,
             category_id,
-            amount
+            amount,
+            updated_at
         FROM orders
         ORDER BY order_id;
     """
@@ -78,7 +79,8 @@ def extract_orders(batch_size=10000):
 
 
 def extract_incremental_orders(
-    watermark,
+    watermark_timestamp,
+    watermark_order_id,
     batch_size=10000,
 ):
     query = """
@@ -87,10 +89,18 @@ def extract_incremental_orders(
             order_date,
             country_id,
             category_id,
-            amount
+            amount,
+            updated_at
         FROM orders
-        WHERE order_id > %s
-        ORDER BY order_id;
+        WHERE
+            updated_at > %s
+            OR (
+                updated_at = %s
+                AND order_id > %s
+                )
+        ORDER BY
+            updated_at,
+            order_id;
     """
 
     with get_mysql_connection() as connection:
@@ -99,7 +109,11 @@ def extract_incremental_orders(
         try:
             cursor.execute(
                 query,
-                (watermark,),
+                (
+                    watermark_timestamp,
+                    watermark_timestamp,
+                    watermark_order_id
+                ),
             )
 
             while True:
