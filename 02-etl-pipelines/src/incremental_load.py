@@ -31,8 +31,19 @@ WATERMARK_NAME = "orders_updated_at_order_id"
 logger = get_logger(PIPELINE_NAME)
 
 
-def run_incremental_load():
-    run_id = start_etl_run(PIPELINE_NAME)
+def run_incremental_load(
+    orchestrator=None,
+    orchestrator_run_id=None,
+    orchestrator_task_id=None,
+    orchestrator_try_number=None,
+):
+    run_id = start_etl_run(
+    PIPELINE_NAME,
+    orchestrator=orchestrator,
+    orchestrator_run_id=orchestrator_run_id,
+    orchestrator_task_id=orchestrator_task_id,
+    orchestrator_try_number=orchestrator_try_number,
+)
 
     logger.info(
         "Starting incremental load. run_id=%s",

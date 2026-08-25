@@ -1,20 +1,39 @@
 from datetime import datetime, timezone
 from db import get_postgres_connection
 
-def start_etl_run(pipeline_name):
+def start_etl_run(
+    pipeline_name,
+    orchestrator=None,
+    orchestrator_run_id=None,
+    orchestrator_task_id=None,
+    orchestrator_try_number=None,
+):
     query = """
-        INSERT INTO audit.etl_run
-        (
-            pipeline_name,
-            status
-        )
-        VALUES (%s, 'RUNNING')
-        RETURNING run_id;
+    INSERT INTO audit.etl_run
+    (
+        pipeline_name,
+        status,
+        orchestrator,
+        orchestrator_run_id,
+        orchestrator_task_id,
+        orchestrator_try_number
+    )
+    VALUES (%s, 'RUNNING', %s, %s, %s, %s)
+    RETURNING run_id;
     """
 
     with get_postgres_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, (pipeline_name,))
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    orchestrator,
+                    orchestrator_run_id,
+                    orchestrator_task_id,
+                    orchestrator_try_number,
+                ),
+)
             run_id = cursor.fetchone()[0]
 
         connection.commit()
@@ -195,3 +214,38 @@ def update_watermark(
             )
 
         connection.commit()
+
+def mark_stale_etl_runs(
+    pipeline_name,
+    stale_after_minutes=15,
+):
+    query = """
+    UPDATE audit.etl_run
+    SET
+        finished_at = CURRENT_TIMESTAMP,
+        status = 'FAILED',
+        error_message =
+            'Marked as stale: execution ended without final audit status'
+    WHERE pipeline_name = %s
+      AND status = 'RUNNING'
+      AND started_at <
+          CURRENT_TIMESTAMP
+          - (%s * INTERVAL '1 minute')
+    RETURNING run_id;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    stale_after_minutes,
+                ),
+            )
+
+            rows = cursor.fetchall()
+
+        connection.commit()
+
+    return [row[0] for row in rows]
