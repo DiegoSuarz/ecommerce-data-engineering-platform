@@ -39,7 +39,7 @@ def test_incremental_load_no_new_data(monkeypatch):
     monkeypatch.setattr(
         incremental_load,
         "start_etl_run",
-        lambda pipeline_name: 100,
+        lambda pipeline_name, **kwargs: 100,
     )
 
     monkeypatch.setattr(
@@ -110,7 +110,7 @@ def test_incremental_load_updates_watermark_on_success(
     monkeypatch.setattr(
         incremental_load,
         "start_etl_run",
-        lambda pipeline_name: 101,
+        lambda pipeline_name, **kwargs: 101,
     )
 
     monkeypatch.setattr(
@@ -303,7 +303,7 @@ def test_incremental_load_does_not_update_watermark_on_failure(
     monkeypatch.setattr(
         incremental_load,
         "start_etl_run",
-        lambda pipeline_name: 102,
+        lambda pipeline_name, **kwargs: 102,
     )
 
     monkeypatch.setattr(

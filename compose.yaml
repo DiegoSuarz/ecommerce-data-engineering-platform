@@ -1,4 +1,79 @@
+x-airflow-common: &airflow-common
+  image: ${AIRFLOW_IMAGE_NAME}
+  restart: unless-stopped
+
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${AIRFLOW_POSTGRES_USER}:${AIRFLOW_POSTGRES_PASSWORD}@airflow-postgres:5432/${AIRFLOW_POSTGRES_DATABASE}
+
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+  user: "${AIRFLOW_UID}:0"
+
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./02-etl-pipelines/src:/opt/airflow/etl:ro
+
+  depends_on:
+    airflow-postgres:
+      condition: service_healthy
+
 services:
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    restart: "no"
+
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate
+
+  airflow-api-server:
+    <<: *airflow-common
+    container_name: airflow-api-server
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow-dag-processor
+    command: dag-processor
+
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
   mysql:
     image: mysql:8.0
     container_name: ecommerce-mysql
@@ -21,6 +96,17 @@ services:
       - ./01-oltp-database/sql/003_load_initial_data.sql:/docker-entrypoint-initdb.d/003_load_initial_data.sql:ro
 
       - ./01-oltp-database/data:/var/lib/mysql-files
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   postgres:
     image: postgres:16
@@ -46,6 +132,31 @@ services:
       retries: 5
       start_period: 10s
 
+  airflow-postgres:
+    image: postgres:16
+    container_name: airflow-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${AIRFLOW_POSTGRES_DATABASE}
+      POSTGRES_USER: ${AIRFLOW_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD}
+
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${AIRFLOW_POSTGRES_USER} -d ${AIRFLOW_POSTGRES_DATABASE}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   mysql_data:
   postgres_data:
+  airflow_postgres_data:

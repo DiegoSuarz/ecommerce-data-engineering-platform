@@ -74,3 +74,8 @@ weblog.tar
 *.model/
 part-*
 model.tar.gz
+
+# ------------------------------
+# Airflow
+# ------------------------------
+airflow/logs/
