@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from logger import get_logger
 
 logger = get_logger("full_load")
@@ -29,11 +30,17 @@ from quality import (
 from transform import (
     build_date_dimension_rows,
     extract_distinct_order_dates,
+    transform_country_rows,
 )
-
 
 PIPELINE_NAME = "full_load"
 
+INITIAL_SCD_EFFECTIVE_FROM = datetime(
+    1900,
+    1,
+    1,
+    tzinfo=timezone.utc,
+)
 
 def run_full_load():
     run_id = start_etl_run(PIPELINE_NAME)
@@ -45,6 +52,8 @@ def run_full_load():
 
         categories = extract_categories()
         countries = extract_countries()
+
+        countries = transform_country_rows(countries)
 
         logger.info(
             "Extracted categories=%s countries=%s",
@@ -82,8 +91,14 @@ def run_full_load():
         logger.info("Loading dimensions")
 
         load_dim_date(date_rows)
-        load_dim_category()
-        load_dim_country()
+
+        load_dim_category(
+            initial_effective_from=INITIAL_SCD_EFFECTIVE_FROM,
+        )
+
+        load_dim_country(
+            initial_effective_from=INITIAL_SCD_EFFECTIVE_FROM,
+        )
 
         logger.info("Loading fact_sales")
         load_fact_sales()

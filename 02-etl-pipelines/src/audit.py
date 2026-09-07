@@ -9,17 +9,31 @@ def start_etl_run(
     orchestrator_try_number=None,
 ):
     query = """
-    INSERT INTO audit.etl_run
-    (
-        pipeline_name,
-        status,
-        orchestrator,
-        orchestrator_run_id,
-        orchestrator_task_id,
-        orchestrator_try_number
-    )
-    VALUES (%s, 'RUNNING', %s, %s, %s, %s)
-    RETURNING run_id;
+        INSERT INTO audit.etl_run
+        (
+            pipeline_name,
+            status,
+            orchestrator,
+            orchestrator_run_id,
+            orchestrator_task_id,
+            orchestrator_try_number
+        )
+        VALUES (%s, 'RUNNING', %s, %s, %s, %s)
+        ON CONFLICT
+        (
+            pipeline_name,
+            orchestrator,
+            orchestrator_run_id
+        )
+        WHERE orchestrator IS NOT NULL
+        AND orchestrator_run_id IS NOT NULL
+        DO UPDATE
+        SET
+            orchestrator_task_id =
+                EXCLUDED.orchestrator_task_id,
+            orchestrator_try_number =
+                EXCLUDED.orchestrator_try_number
+        RETURNING run_id;
     """
 
     with get_postgres_connection() as connection:

@@ -1,5 +1,60 @@
+import hashlib
 
 from db import get_postgres_connection
+
+
+def calculate_scd2_hash(sales_region, market_segment):
+    def normalize(value):
+        if value is None:
+            return "<NULL>"
+
+        return str(value).strip()
+
+    normalized_values = [
+        normalize(sales_region),
+        normalize(market_segment),
+    ]
+
+    canonical_value = "|".join(
+        f"{len(value)}:{value}"
+        for value in normalized_values
+    )
+
+    return hashlib.sha256(
+        canonical_value.encode("utf-8")
+    ).hexdigest()
+
+def transform_country_rows(rows):
+    transformed_rows = []
+
+    for row in rows:
+        (
+            country_id,
+            country_code,
+            country_name,
+            sales_region,
+            market_segment,
+            updated_at,
+        ) = row
+
+        row_hash = calculate_scd2_hash(
+            sales_region,
+            market_segment,
+        )
+
+        transformed_rows.append(
+            (
+                country_id,
+                country_code,
+                country_name,
+                sales_region,
+                market_segment,
+                updated_at,
+                row_hash,
+            )
+        )
+
+    return transformed_rows
 
 def build_date_dimension_rows(order_dates):
     rows = []
@@ -24,9 +79,6 @@ def build_date_dimension_rows(order_dates):
         )
 
     return rows
-
-
-
 
 def extract_distinct_order_dates():
     query = """

@@ -90,11 +90,7 @@ services:
 
     volumes:
       - mysql_data:/var/lib/mysql
-
-      - ./01-oltp-database/sql/001_create_database.sql:/docker-entrypoint-initdb.d/001_create_database.sql:ro
-      - ./01-oltp-database/sql/002_create_tables.sql:/docker-entrypoint-initdb.d/002_create_tables.sql:ro
-      - ./01-oltp-database/sql/003_load_initial_data.sql:/docker-entrypoint-initdb.d/003_load_initial_data.sql:ro
-
+      - ./01-oltp-database/sql:/docker-entrypoint-initdb.d:ro
       - ./01-oltp-database/data:/var/lib/mysql-files
 
     healthcheck:
