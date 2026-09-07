@@ -5,7 +5,10 @@ def extract_categories():
     query = """
         SELECT
             category_id,
-            category_name
+            category_code,
+            category_name,
+            department,
+            updated_at
         FROM categories
         ORDER BY category_id;
     """
@@ -21,12 +24,15 @@ def extract_categories():
 
     return rows
 
-
 def extract_countries():
     query = """
         SELECT
             country_id,
-            country_name
+            country_code,
+            country_name,
+            sales_region,
+            market_segment,
+            updated_at
         FROM countries
         ORDER BY country_id;
     """
@@ -41,7 +47,6 @@ def extract_countries():
             cursor.close()
 
     return rows
-
 
 def extract_orders(batch_size=10000):
     query = """

@@ -8,9 +8,12 @@ def load_categories(rows):
         INSERT INTO staging.categories
         (
             category_id,
-            category_name
+            category_code,
+            category_name,
+            department,
+            updated_at
         )
-        VALUES (%s, %s);
+        VALUES (%s, %s, %s, %s, %s);
     """
 
     with get_postgres_connection() as connection:
@@ -20,16 +23,19 @@ def load_categories(rows):
 
         connection.commit()
 
-
-
 def load_countries(rows):
     insert_query = """
         INSERT INTO staging.countries
         (
             country_id,
-            country_name
+            country_code,
+            country_name,
+            sales_region,
+            market_segment,
+            updated_at,
+            row_hash
         )
-        VALUES (%s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s, %s);
     """
 
     with get_postgres_connection() as connection:
@@ -38,7 +44,6 @@ def load_countries(rows):
             cursor.executemany(insert_query, rows)
 
         connection.commit()
-
 
 def load_orders(order_batches):
     insert_query = """
@@ -109,52 +114,202 @@ def load_dim_date(rows):
         connection.commit()
 
 
-def load_dim_category():
-    query = """
+def load_dim_category(initial_effective_from=None):
+    insert_query = """
         INSERT INTO dw.dim_category
         (
             category_id,
-            category_name
+            category_code,
+            category_name,
+            department,
+            effective_from,
+            effective_to,
+            is_current
         )
         SELECT
-            category_id,
-            category_name
-        FROM staging.categories
-        ORDER BY category_id;
+            s.category_id,
+            s.category_code,
+            s.category_name,
+            s.department,
+            COALESCE(%s, s.updated_at),
+            NULL,
+            TRUE
+        FROM staging.categories AS s
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM dw.dim_category AS d
+            WHERE d.category_id = s.category_id
+        )
+        ORDER BY s.category_id;
+    """
+
+    type2_update_query = """
+    WITH changed_categories AS
+    (
+        UPDATE dw.dim_category AS d
+        SET
+            effective_to = s.updated_at,
+            is_current = FALSE
+        FROM staging.categories AS s
+        WHERE d.category_id = s.category_id
+          AND d.is_current = TRUE
+          AND d.department IS DISTINCT FROM s.department
+          AND s.updated_at > d.effective_from
+        RETURNING
+            d.category_id,
+            d.category_code
+    )
+    INSERT INTO dw.dim_category
+    (
+        category_id,
+        category_code,
+        category_name,
+        department,
+        effective_from,
+        effective_to,
+        is_current
+    )
+    SELECT
+        c.category_id,
+        c.category_code,
+        s.category_name,
+        s.department,
+        s.updated_at,
+        NULL,
+        TRUE
+    FROM changed_categories AS c
+    INNER JOIN staging.categories AS s
+        ON c.category_id = s.category_id;
+    """
+
+    type1_update_query = """
+        UPDATE dw.dim_category AS d
+        SET
+            category_name = s.category_name
+        FROM staging.categories AS s
+        WHERE d.category_id = s.category_id
+          AND d.category_name IS DISTINCT FROM s.category_name;
     """
 
     with get_postgres_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "TRUNCATE TABLE dw.dim_category "
-                "RESTART IDENTITY CASCADE;"
+                insert_query,
+                (initial_effective_from,),
             )
-            cursor.execute(query)
+            cursor.execute(type2_update_query)
+            cursor.execute(type1_update_query)
 
         connection.commit()
 
-
-def load_dim_country():
-    query = """
+def load_dim_country(initial_effective_from=None):
+    insert_query = """
         INSERT INTO dw.dim_country
         (
             country_id,
-            country_name
+            country_code,
+            country_name,
+            sales_region,
+            market_segment,
+            row_hash,
+            effective_from,
+            effective_to,
+            is_current
         )
         SELECT
+            s.country_id,
+            s.country_code,
+            s.country_name,
+            s.sales_region,
+            s.market_segment,
+            s.row_hash,
+            COALESCE(%s, s.updated_at),
+            NULL,
+            TRUE
+        FROM staging.countries AS s
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM dw.dim_country AS d
+            WHERE d.country_id = s.country_id
+        )
+        ORDER BY s.country_id;
+    """
+
+    initialize_hash_query = """
+    UPDATE dw.dim_country AS d
+    SET
+        row_hash = s.row_hash
+    FROM staging.countries AS s
+    WHERE d.country_id = s.country_id
+      AND d.is_current = TRUE
+      AND d.row_hash IS NULL
+      AND d.sales_region IS NOT DISTINCT FROM s.sales_region
+      AND d.market_segment IS NOT DISTINCT FROM s.market_segment;
+    """
+
+    type2_update_query = """
+        WITH changed_countries AS
+        (
+            UPDATE dw.dim_country AS d
+            SET
+                effective_to = s.updated_at,
+                is_current = FALSE
+            FROM staging.countries AS s
+            WHERE d.country_id = s.country_id
+              AND d.is_current = TRUE
+              AND d.row_hash IS DISTINCT FROM s.row_hash
+              AND s.updated_at > d.effective_from
+            RETURNING
+                d.country_id,
+                d.country_code
+        )
+        INSERT INTO dw.dim_country
+        (
             country_id,
-            country_name
-        FROM staging.countries
-        ORDER BY country_id;
+            country_code,
+            country_name,
+            sales_region,
+            market_segment,
+            row_hash,
+            effective_from,
+            effective_to,
+            is_current
+        )
+        SELECT
+            c.country_id,
+            c.country_code,
+            s.country_name,
+            s.sales_region,
+            s.market_segment,
+            s.row_hash,
+            s.updated_at,
+            NULL,
+            TRUE
+        FROM changed_countries AS c
+        INNER JOIN staging.countries AS s
+            ON c.country_id = s.country_id;
+    """
+
+    type1_update_query = """
+        UPDATE dw.dim_country AS d
+        SET
+            country_name = s.country_name
+        FROM staging.countries AS s
+        WHERE d.country_id = s.country_id
+          AND d.country_name IS DISTINCT FROM s.country_name;
     """
 
     with get_postgres_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "TRUNCATE TABLE dw.dim_country "
-                "RESTART IDENTITY CASCADE;"
+                insert_query,
+                (initial_effective_from,),
             )
-            cursor.execute(query)
+            cursor.execute(initialize_hash_query)
+            cursor.execute(type2_update_query)
+            cursor.execute(type1_update_query)
 
         connection.commit()
 
@@ -185,9 +340,19 @@ def load_fact_sales():
 
         INNER JOIN dw.dim_country c
             ON o.country_id = c.country_id
+            AND (o.order_date::timestamp AT TIME ZONE 'UTC') >= c.effective_from
+            AND (
+                c.effective_to IS NULL
+                OR (o.order_date::timestamp AT TIME ZONE 'UTC') < c.effective_to
+            )
 
         INNER JOIN dw.dim_category cat
             ON o.category_id = cat.category_id
+            AND (o.order_date::timestamp AT TIME ZONE 'UTC') >= cat.effective_from
+            AND (
+                cat.effective_to IS NULL
+                OR (o.order_date::timestamp AT TIME ZONE 'UTC') < cat.effective_to
+            )
 
         ORDER BY o.order_id;
     """
@@ -314,9 +479,19 @@ def load_incremental_fact_sales():
 
         INNER JOIN dw.dim_country c
             ON o.country_id = c.country_id
+            AND (o.order_date::timestamp AT TIME ZONE 'UTC') >= c.effective_from
+            AND (
+                c.effective_to IS NULL
+                OR (o.order_date::timestamp AT TIME ZONE 'UTC') < c.effective_to
+            )
 
         INNER JOIN dw.dim_category cat
             ON o.category_id = cat.category_id
+            AND (o.order_date::timestamp AT TIME ZONE 'UTC') >= cat.effective_from
+            AND (
+                cat.effective_to IS NULL
+                OR (o.order_date::timestamp AT TIME ZONE 'UTC') < cat.effective_to
+            )
 
         ON CONFLICT (order_id)
         DO UPDATE
