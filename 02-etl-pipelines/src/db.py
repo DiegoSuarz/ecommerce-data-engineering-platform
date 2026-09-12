@@ -20,6 +20,13 @@ def get_mysql_connection():
         password=os.environ["MYSQL_PASSWORD"],
     )
 
+def get_mysql_cdc_settings():
+    return {
+        "host": os.environ["MYSQL_HOST"],
+        "port": int(os.environ["MYSQL_PORT"]),
+        "user": os.environ["MYSQL_CDC_USER"],
+        "password": os.environ["MYSQL_CDC_PASSWORD"],
+    }
 
 def get_postgres_connection():
     return psycopg.connect(

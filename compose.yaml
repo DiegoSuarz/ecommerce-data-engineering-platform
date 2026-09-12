@@ -1,4 +1,10 @@
 x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: airflow/Dockerfile
+    args:
+      AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE}
+
   image: ${AIRFLOW_IMAGE_NAME}
   restart: unless-stopped
 
@@ -79,11 +85,22 @@ services:
     container_name: ecommerce-mysql
     restart: unless-stopped
 
+    command:
+      - --server-id=1
+      - --log-bin=binlog
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --binlog-row-metadata=FULL
+      - --binlog-expire-logs-seconds=2592000
+
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+      MYSQL_CDC_USER: ${MYSQL_CDC_USER}
+      MYSQL_CDC_PASSWORD: ${MYSQL_CDC_PASSWORD}
 
     ports:
       - "${MYSQL_PORT}:3306"

@@ -10,39 +10,45 @@ Design and implement a data platform that separates transactional workloads from
 
 ## Architecture
 
-The core data flow is:
-
-`MySQL OLTP → Python ETL → PostgreSQL Data Warehouse → Power BI`
-
-Apache Airflow orchestrates the ETL workflows.
+The platform combines state-based ETL processing with log-based Change Data Capture.
 
 ```text
 MySQL OLTP
     │
-    ▼
-Python ETL
-    │
-    ├── Full load
-    ├── Incremental load
-    ├── Composite watermark
-    └── Slowly Changing Dimensions
-    │
-    ▼
-PostgreSQL Data Warehouse
-    │
-    ├── Dimensional model
-    ├── Historical dimensions
-    ├── Temporal fact resolution
-    └── ETL audit
-    │
-    ▼
-Power BI
+    ├──────────────────────────────────────────────┐
+    │                                              │
+    ▼                                              ▼
+Python ETL                                   MySQL Binary Log
+    │                                              │
+    ├── Full load                                 ▼
+    ├── Incremental load                     CDC EXTRACT
+    ├── Composite watermark                       │
+    └── Slowly Changing Dimensions                ▼
+    │                                      cdc.raw_change_event
+    │                                              │
+    ▼                                              ▼
+PostgreSQL Data Warehouse                    CDC TRANSFORM
+    │                                              │
+    ├── Dimensional model                         ▼
+    ├── Historical dimensions              cdc.transformed_event
+    ├── Temporal fact resolution                  │
+    └── ETL audit                                 ▼
+                                           CDC LOAD
+                                                  │
+                                                  ▼
+                                           cdc.change_event
 
 Apache Airflow
     │
-    └── ETL orchestration and monitoring
-
+    ├── Incremental ETL orchestration
+    └── Multi-stage CDC orchestration
 ```
+
+The traditional ETL path loads analytical dimensional structures in PostgreSQL.
+
+The CDC path reads committed row changes directly from the MySQL binary log and persists them through durable RAW, TRANSFORMED, and FINAL layers.
+
+Apache Airflow orchestrates both processing models.
 
 ## Project Modules
 
@@ -68,6 +74,13 @@ The `05-big-data` directory is retained in the repository structure, but Spark/P
 - Controlled failure handling and retry-safe audit behavior.
 - Automated ETL and SCD tests.
 - Fresh-database reproducibility validation.
+- Log-based MySQL Change Data Capture for INSERT, UPDATE, and DELETE operations.
+- Transaction-aware CDC processing based on committed MySQL binlog transactions.
+- Durable RAW, TRANSFORMED, and FINAL CDC event layers in PostgreSQL.
+- Dual READ/APPLY CDC checkpoints with atomic state progression.
+- Safe checkpoint advancement across empty batches and binlog rotation.
+- Idempotent CDC persistence using deterministic event keys.
+- Multi-stage Airflow CDC orchestration with explicit EXTRACT, TRANSFORM, and LOAD tasks.
 
 ## Running the Project
 
@@ -181,6 +194,7 @@ Available DAGs include:
 - `ecommerce_connectivity_check` — Validates database connectivity.
 - `ecommerce_smoke_test` — Basic Airflow environment validation.
 - `ecommerce_audit_reconciliation` — Reconciles stale or incomplete ETL audit executions.
+- `ecommerce_change_data_capture` — Multi-stage log-based CDC orchestration from MySQL binlog to PostgreSQL.
 
 After starting the Docker services, list the available DAGs with:
 
@@ -209,9 +223,10 @@ The Airflow web interface is available through the port configured by `AIRFLOW_P
 Additional technical documentation is available in:
 
 - [`01-oltp-database/README.md`](01-oltp-database/README.md) — OLTP database structure and source data setup.
-- [`02-etl-pipelines/README.md`](02-etl-pipelines/README.md) — ETL pipeline implementation and execution details.
+- [`02-etl-pipelines/README.md`](02-etl-pipelines/README.md) — ETL and CDC pipeline implementation and execution details.
 - [`airflow/README.md`](airflow/README.md) — Airflow orchestration setup and DAG usage.
 - [`docs/scd-design.md`](docs/scd-design.md) — Slowly Changing Dimensions design, temporal validity, hashing strategy, migration behavior, and validation.
+- [`docs/cdc-design.md`](docs/cdc-design.md) — Log-based CDC architecture, transaction handling, durable staging, checkpoint model, failure semantics, and end-to-end validation.
 
 ## Status
 
@@ -227,5 +242,9 @@ The core data platform is operational and currently includes:
 - Apache Airflow orchestration.
 - Slowly Changing Dimensions with Type 0, Type 1, and Type 2 behavior.
 - Historical and temporal dimension resolution.
+- Log-based Change Data Capture from the MySQL binary log.
+- INSERT, UPDATE, and DELETE event capture.
+- Durable multi-stage CDC processing through RAW, TRANSFORMED, and FINAL layers.
+- READ/APPLY checkpoint management with retry-safe and idempotent persistence.
 
-The next development stages will extend the platform with Change Data Capture (CDC) and business intelligence reporting.
+The next development stages will focus on pipeline hardening, end-to-end operational validation, and final portfolio documentation.

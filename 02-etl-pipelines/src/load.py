@@ -1,7 +1,56 @@
+from datetime import date, datetime
+from decimal import Decimal
+
+from psycopg.types.json import Jsonb
+
 from db import get_postgres_connection
 from logger import get_logger
 
 logger = get_logger("load")
+
+def make_json_safe(value):
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return value
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    if isinstance(value, Decimal):
+        return str(value)
+
+    if isinstance(value, bytes):
+        return value.hex()
+
+    if isinstance(value, dict):
+        return {
+            key: make_json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [
+            make_json_safe(item)
+            for item in value
+        ]
+
+    raise TypeError(
+        "Unsupported CDC JSON value type: "
+        f"{type(value).__name__}"
+    )
 
 def load_categories(rows):
     insert_query = """
@@ -508,3 +557,125 @@ def load_incremental_fact_sales():
             cursor.execute(query)
 
         connection.commit()
+
+def insert_change_events(
+    cursor,
+    batch_id,
+    change_events,
+):
+    insert_query = """
+        INSERT INTO cdc.change_event
+        (
+            event_key,
+            batch_id,
+            operation,
+            source_schema,
+            source_table,
+            primary_key,
+            before_values,
+            after_values,
+            binlog_file,
+            event_end_position,
+            row_index,
+            transaction_id,
+            commit_position,
+            event_timestamp,
+            commit_timestamp
+        )
+        VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (event_key)
+        DO NOTHING
+        RETURNING event_id;
+    """
+
+    rows_inserted = 0
+
+    for change_event in change_events:
+        primary_key = Jsonb(
+            make_json_safe(
+                change_event["primary_key"]
+            )
+        )
+
+        before_values = None
+
+        if change_event["before_values"] is not None:
+            before_values = Jsonb(
+                make_json_safe(
+                    change_event["before_values"]
+                )
+            )
+
+        after_values = None
+
+        if change_event["after_values"] is not None:
+            after_values = Jsonb(
+                make_json_safe(
+                    change_event["after_values"]
+                )
+            )
+
+        cursor.execute(
+            insert_query,
+            (
+                change_event["event_key"],
+                batch_id,
+                change_event["operation"],
+                change_event["source_schema"],
+                change_event["source_table"],
+                primary_key,
+                before_values,
+                after_values,
+                change_event["binlog_file"],
+                change_event[
+                    "event_end_position"
+                ],
+                change_event["row_index"],
+                change_event[
+                    "transaction_id"
+                ],
+                change_event[
+                    "commit_position"
+                ],
+                change_event[
+                    "event_timestamp"
+                ],
+                change_event[
+                    "commit_timestamp"
+                ],
+            ),
+        )
+
+        row = cursor.fetchone()
+
+        if row is not None:
+            rows_inserted += 1
+
+    return rows_inserted
+
+def load_change_events(
+    batch_id,
+    change_events,
+):
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            rows_inserted = insert_change_events(
+                cursor,
+                batch_id,
+                change_events,
+            )
+
+        connection.commit()
+
+    logger.info(
+        "CDC change events persisted. "
+        "received=%s inserted=%s",
+        len(change_events),
+        rows_inserted,
+    )
+
+    return rows_inserted

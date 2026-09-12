@@ -263,3 +263,316 @@ def mark_stale_etl_runs(
         connection.commit()
 
     return [row[0] for row in rows]
+
+def get_cdc_checkpoint(
+    pipeline_name,
+    checkpoint_name,
+):
+    query = """
+        SELECT
+            binlog_file,
+            binlog_position
+        FROM audit.cdc_checkpoint
+        WHERE pipeline_name = %s
+          AND checkpoint_name = %s;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    checkpoint_name,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return row[0], row[1]
+
+
+def initialize_cdc_checkpoint(
+    pipeline_name,
+    checkpoint_name,
+    binlog_file,
+    binlog_position,
+):
+    query = """
+        INSERT INTO audit.cdc_checkpoint
+        (
+            pipeline_name,
+            checkpoint_name,
+            binlog_file,
+            binlog_position
+        )
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (
+            pipeline_name,
+            checkpoint_name
+        )
+        DO NOTHING;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    pipeline_name,
+                    checkpoint_name,
+                    binlog_file,
+                    binlog_position,
+                ),
+            )
+
+        connection.commit()
+
+    return get_cdc_checkpoint(
+        pipeline_name,
+        checkpoint_name,
+    )
+
+def initialize_cdc_checkpoint_from_checkpoint(
+    pipeline_name,
+    source_checkpoint_name,
+    target_checkpoint_name,
+):
+    """
+    Initialize a CDC checkpoint from another checkpoint.
+
+    The target checkpoint is created only when it does not
+    already exist. This makes the operation idempotent.
+
+    The source checkpoint is used only for the initial
+    bootstrap of the target.
+    """
+
+    with get_postgres_connection() as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO audit.cdc_checkpoint (
+                        pipeline_name,
+                        checkpoint_name,
+                        binlog_file,
+                        binlog_position,
+                        updated_at
+                    )
+                    SELECT
+                        pipeline_name,
+                        %s,
+                        binlog_file,
+                        binlog_position,
+                        CURRENT_TIMESTAMP
+                    FROM audit.cdc_checkpoint
+                    WHERE pipeline_name = %s
+                      AND checkpoint_name = %s
+                    ON CONFLICT (
+                        pipeline_name,
+                        checkpoint_name
+                    )
+                    DO NOTHING
+                    RETURNING
+                        binlog_file,
+                        binlog_position
+                    """,
+                    (
+                        target_checkpoint_name,
+                        pipeline_name,
+                        source_checkpoint_name,
+                    ),
+                )
+
+                checkpoint = cursor.fetchone()
+
+                if checkpoint is None:
+                    cursor.execute(
+                        """
+                        SELECT
+                            binlog_file,
+                            binlog_position
+                        FROM audit.cdc_checkpoint
+                        WHERE pipeline_name = %s
+                          AND checkpoint_name = %s
+                        """,
+                        (
+                            pipeline_name,
+                            target_checkpoint_name,
+                        ),
+                    )
+
+                    checkpoint = cursor.fetchone()
+
+                if checkpoint is None:
+                    raise RuntimeError(
+                        "Unable to initialize CDC "
+                        "checkpoint "
+                        f"{target_checkpoint_name!r} "
+                        "from "
+                        f"{source_checkpoint_name!r}: "
+                        "source checkpoint does not "
+                        "exist."
+                    )
+
+            connection.commit()
+
+            return (
+                checkpoint[0],
+                checkpoint[1],
+            )
+
+        except Exception:
+            connection.rollback()
+            raise
+
+def upsert_cdc_checkpoint(
+    cursor,
+    pipeline_name,
+    checkpoint_name,
+    binlog_file,
+    binlog_position,
+):
+    query = """
+        INSERT INTO audit.cdc_checkpoint
+        (
+            pipeline_name,
+            checkpoint_name,
+            binlog_file,
+            binlog_position
+        )
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (
+            pipeline_name,
+            checkpoint_name
+        )
+        DO UPDATE
+        SET
+            binlog_file = EXCLUDED.binlog_file,
+            binlog_position =
+                EXCLUDED.binlog_position,
+            updated_at = CURRENT_TIMESTAMP;
+    """
+
+    cursor.execute(
+        query,
+        (
+            pipeline_name,
+            checkpoint_name,
+            binlog_file,
+            binlog_position,
+        ),
+    )
+
+def update_cdc_checkpoint(
+    pipeline_name,
+    checkpoint_name,
+    binlog_file,
+    binlog_position,
+):
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            upsert_cdc_checkpoint(
+                cursor,
+                pipeline_name,
+                checkpoint_name,
+                binlog_file,
+                binlog_position,
+            )
+
+        connection.commit()
+
+def start_cdc_batch(
+    run_id,
+    start_binlog_file,
+    start_binlog_position,
+):
+    query = """
+        INSERT INTO audit.cdc_batch
+        (
+            run_id,
+            start_binlog_file,
+            start_binlog_position
+        )
+        VALUES (%s, %s, %s)
+        ON CONFLICT (run_id)
+        DO NOTHING
+        RETURNING batch_id;
+    """
+
+    select_query = """
+        SELECT batch_id
+        FROM audit.cdc_batch
+        WHERE run_id = %s;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    run_id,
+                    start_binlog_file,
+                    start_binlog_position,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+            if row is None:
+                cursor.execute(
+                    select_query,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+
+            batch_id = row[0]
+
+        connection.commit()
+
+    return batch_id
+
+def complete_cdc_batch(
+    batch_id,
+    end_binlog_file,
+    end_binlog_position,
+    transactions_processed,
+    events_processed,
+    insert_events,
+    update_events,
+    delete_events,
+):
+    query = """
+        UPDATE audit.cdc_batch
+        SET
+            end_binlog_file = %s,
+            end_binlog_position = %s,
+            transactions_processed = %s,
+            events_processed = %s,
+            insert_events = %s,
+            update_events = %s,
+            delete_events = %s
+        WHERE batch_id = %s;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (
+                    end_binlog_file,
+                    end_binlog_position,
+                    transactions_processed,
+                    events_processed,
+                    insert_events,
+                    update_events,
+                    delete_events,
+                    batch_id,
+                ),
+            )
+
+        connection.commit()
