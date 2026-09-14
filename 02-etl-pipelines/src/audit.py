@@ -486,6 +486,57 @@ def update_cdc_checkpoint(
 
         connection.commit()
 
+def get_latest_cdc_batch_state(
+    pipeline_name,
+):
+    """
+    Return the most recent CDC batch and
+    its owning ETL run status.
+
+    The ETL run is the lifecycle authority;
+    cdc_batch stores CDC coordinates and
+    batch metrics.
+    """
+    query = """
+        SELECT
+            b.batch_id,
+            b.run_id,
+            r.status,
+            b.start_binlog_file,
+            b.start_binlog_position,
+            b.end_binlog_file,
+            b.end_binlog_position
+        FROM audit.cdc_batch AS b
+        INNER JOIN audit.etl_run AS r
+            ON r.run_id = b.run_id
+        WHERE r.pipeline_name = %s
+        ORDER BY b.batch_id DESC
+        LIMIT 1;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (pipeline_name,),
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "batch_id": row[0],
+        "run_id": row[1],
+        "status": row[2],
+        "start_binlog_file": row[3],
+        "start_binlog_position": row[4],
+        "end_binlog_file": row[5],
+        "end_binlog_position": row[6],
+    }
+
+
 def start_cdc_batch(
     run_id,
     start_binlog_file,

@@ -17,6 +17,12 @@ def test_ready_when_read_equals_apply(
         ),
     )
 
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: None,
+    )
+
     coordinate = (
         cdc_pipeline
         .assert_multistage_cdc_ready()
@@ -105,6 +111,12 @@ def test_bootstraps_missing_read_checkpoint(
             "from_checkpoint"
         ),
         bootstrap,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: None,
     )
 
     coordinate = (
@@ -217,6 +229,17 @@ def test_complete_multistage_cdc_run(
         lambda batch_id: metrics,
     )
 
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_loaded_batch_metrics",
+        lambda batch_id: {
+            "event_count": 3,
+            "insert_count": 1,
+            "update_count": 1,
+            "delete_count": 1,
+        },
+    )
+
     complete_batch = Mock()
     complete_run = Mock()
 
@@ -292,3 +315,290 @@ def test_complete_multistage_cdc_run(
     assert result[
         "end_binlog_position"
     ] == 3771
+
+
+def test_complete_uses_durable_loaded_count_after_idempotent_retry(
+    monkeypatch,
+):
+    transformed_metrics = {
+        "transaction_count": 1,
+        "event_count": 3,
+        "insert_count": 1,
+        "update_count": 1,
+        "delete_count": 1,
+    }
+
+    durable_metrics = {
+        "event_count": 3,
+        "insert_count": 1,
+        "update_count": 1,
+        "delete_count": 1,
+    }
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_transformed_batch_metrics",
+        lambda batch_id: (
+            transformed_metrics
+        ),
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_loaded_batch_metrics",
+        lambda batch_id: durable_metrics,
+        raising=False,
+    )
+
+    complete_batch = Mock()
+    complete_run = Mock()
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "complete_cdc_batch",
+        complete_batch,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "complete_etl_run",
+        complete_run,
+    )
+
+    load_result = {
+        "batch_id": 217,
+        "raw_events": 3,
+        "transformed_events": 3,
+        "events_loaded": 3,
+
+        # Retry inserted nothing new.
+        "events_inserted": 0,
+
+        "events_applied": 0,
+        "end_binlog_file": (
+            "binlog.000032"
+        ),
+        "end_binlog_position": 3771,
+    }
+
+    result = (
+        cdc_pipeline
+        .complete_multistage_cdc_run(
+            run_id=492,
+            batch_id=217,
+            load_result=load_result,
+        )
+    )
+
+    complete_run.assert_called_once_with(
+        492,
+        rows_extracted=3,
+        rows_loaded=3,
+        rows_rejected=0,
+    )
+
+    assert result[
+        "events_inserted"
+    ] == 0
+
+    assert result[
+        "events_durable"
+    ] == 3
+
+
+def test_complete_rejects_transformed_final_count_mismatch(
+    monkeypatch,
+):
+    transformed_metrics = {
+        "transaction_count": 1,
+        "event_count": 3,
+        "insert_count": 1,
+        "update_count": 1,
+        "delete_count": 1,
+    }
+
+    durable_metrics = {
+        "event_count": 2,
+        "insert_count": 1,
+        "update_count": 1,
+        "delete_count": 0,
+    }
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_transformed_batch_metrics",
+        lambda batch_id: transformed_metrics,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_loaded_batch_metrics",
+        lambda batch_id: durable_metrics,
+        raising=False,
+    )
+
+    complete_batch = Mock()
+    complete_run = Mock()
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "complete_cdc_batch",
+        complete_batch,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "complete_etl_run",
+        complete_run,
+    )
+
+    load_result = {
+        "events_inserted": 0,
+        "end_binlog_file": "binlog.000032",
+        "end_binlog_position": 3771,
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="reconciliation",
+    ):
+        cdc_pipeline.complete_multistage_cdc_run(
+            run_id=492,
+            batch_id=217,
+            load_result=load_result,
+        )
+
+    complete_batch.assert_not_called()
+    complete_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "RUNNING",
+        "FAILED",
+    ],
+)
+def test_ready_rejects_incomplete_previous_batch_when_checkpoints_match(
+    monkeypatch,
+    status,
+):
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        lambda *args: (
+            "binlog.000040",
+            1200,
+        ),
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: {
+            "batch_id": 217,
+            "run_id": 492,
+            "status": status,
+            "start_binlog_file": (
+                "binlog.000039"
+            ),
+            "start_binlog_position": 900,
+            "end_binlog_file": (
+                "binlog.000040"
+            ),
+            "end_binlog_position": 1200,
+        },
+        raising=False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="incomplete CDC batch",
+    ):
+        (
+            cdc_pipeline
+            .assert_multistage_cdc_ready()
+        )
+
+
+def test_ready_rejects_completed_batch_audit_checkpoint_mismatch(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        lambda *args: (
+            "binlog.000040",
+            1200,
+        ),
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: {
+            "batch_id": 217,
+            "run_id": 492,
+            "status": "SUCCESS",
+            "start_binlog_file": (
+                "binlog.000039"
+            ),
+            "start_binlog_position": 900,
+            "end_binlog_file": (
+                "binlog.000039"
+            ),
+            "end_binlog_position": 1100,
+        },
+        raising=False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="audit/checkpoint mismatch",
+    ):
+        (
+            cdc_pipeline
+            .assert_multistage_cdc_ready()
+        )
+
+
+def test_ready_accepts_completed_batch_matching_apply(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        lambda *args: (
+            "binlog.000040",
+            1200,
+        ),
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: {
+            "batch_id": 217,
+            "run_id": 492,
+            "status": "SUCCESS",
+            "start_binlog_file": (
+                "binlog.000039"
+            ),
+            "start_binlog_position": 900,
+            "end_binlog_file": (
+                "binlog.000040"
+            ),
+            "end_binlog_position": 1200,
+        },
+        raising=False,
+    )
+
+    coordinate = (
+        cdc_pipeline
+        .assert_multistage_cdc_ready()
+    )
+
+    assert coordinate == (
+        "binlog.000040",
+        1200,
+    )
