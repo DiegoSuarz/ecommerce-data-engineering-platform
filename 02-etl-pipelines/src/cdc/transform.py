@@ -1,6 +1,6 @@
 from psycopg.types.json import Jsonb
 
-from cdc import (
+from cdc.stream import (
     build_primary_key_columns_by_table,
     extract_primary_key,
 )
@@ -9,7 +9,7 @@ from load import make_json_safe
 from logger import get_logger
 
 
-logger = get_logger("cdc_transform")
+logger = get_logger("cdc.transform")
 
 
 SOURCE_SCHEMA = "sales"

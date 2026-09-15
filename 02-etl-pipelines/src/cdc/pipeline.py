@@ -3,17 +3,23 @@ from audit import (
     complete_etl_run,
     fail_etl_run,
     get_cdc_checkpoint,
+    get_latest_cdc_batch_state,
+    initialize_cdc_checkpoint,
     initialize_cdc_checkpoint_from_checkpoint,
     start_cdc_batch,
     start_etl_run,
 )
-from cdc_load import (
+from cdc.apply import (
+    get_loaded_batch_metrics,
     get_transformed_batch_metrics,
+)
+from cdc.stream import (
+    get_current_binlog_coordinate,
 )
 from logger import get_logger
 
 
-logger = get_logger("cdc_pipeline")
+logger = get_logger("cdc.pipeline")
 
 
 PIPELINE_NAME = "change_data_capture"
@@ -36,9 +42,50 @@ def get_multistage_checkpoints():
     )
 
     if apply_checkpoint is None:
-        raise RuntimeError(
-            "CDC APPLY checkpoint does "
-            "not exist."
+        read_checkpoint = (
+            get_cdc_checkpoint(
+                PIPELINE_NAME,
+                READ_CHECKPOINT_NAME,
+            )
+        )
+
+        latest_batch = (
+            get_latest_cdc_batch_state(
+                PIPELINE_NAME
+            )
+        )
+
+        if (
+            read_checkpoint is not None
+            or latest_batch is not None
+        ):
+            raise RuntimeError(
+                "CDC APPLY checkpoint is missing "
+                "but durable CDC state already "
+                "exists. Automatic bootstrap is "
+                "only allowed for a fresh CDC "
+                "state."
+            )
+
+        current_coordinate = (
+            get_current_binlog_coordinate()
+        )
+
+        apply_checkpoint = (
+            initialize_cdc_checkpoint(
+                PIPELINE_NAME,
+                APPLY_CHECKPOINT_NAME,
+                current_coordinate[0],
+                current_coordinate[1],
+            )
+        )
+
+        logger.info(
+            "CDC APPLY checkpoint initialized "
+            "from current MySQL binlog head. "
+            "checkpoint=%s:%s",
+            apply_checkpoint[0],
+            apply_checkpoint[1],
         )
 
     read_checkpoint = (
@@ -79,6 +126,51 @@ def assert_multistage_cdc_ready():
             "batch. "
             f"READ={checkpoints['read']} "
             f"APPLY={checkpoints['apply']}."
+        )
+
+    latest_batch = (
+        get_latest_cdc_batch_state(
+            PIPELINE_NAME
+        )
+    )
+
+    if latest_batch is None:
+        return checkpoints["apply"]
+
+    if latest_batch["status"] != "SUCCESS":
+        raise RuntimeError(
+            "CDC pipeline has an incomplete "
+            "CDC batch. A new batch cannot "
+            "start until the previous run is "
+            "completed successfully. "
+            f"batch_id="
+            f"{latest_batch['batch_id']} "
+            f"run_id="
+            f"{latest_batch['run_id']} "
+            f"status="
+            f"{latest_batch['status']}."
+        )
+
+    batch_end = (
+        latest_batch[
+            "end_binlog_file"
+        ],
+        latest_batch[
+            "end_binlog_position"
+        ],
+    )
+
+    if batch_end != checkpoints["apply"]:
+        raise RuntimeError(
+            "CDC pipeline audit/checkpoint "
+            "mismatch. The latest successful "
+            "CDC batch must end exactly at "
+            "the APPLY checkpoint. "
+            f"batch_id="
+            f"{latest_batch['batch_id']} "
+            f"batch_end={batch_end} "
+            f"APPLY="
+            f"{checkpoints['apply']}."
         )
 
     return checkpoints["apply"]
@@ -159,11 +251,29 @@ def complete_multistage_cdc_run(
     batch_id,
     load_result,
 ):
-    metrics = (
+    transformed_metrics = (
         get_transformed_batch_metrics(
             batch_id
         )
     )
+
+    loaded_metrics = (
+        get_loaded_batch_metrics(
+            batch_id
+        )
+    )
+
+    if (
+        transformed_metrics["event_count"]
+        != loaded_metrics["event_count"]
+    ):
+        raise RuntimeError(
+            "CDC COMPLETE reconciliation "
+            "failed: transformed_events="
+            f"{transformed_metrics['event_count']} "
+            "durable_final_events="
+            f"{loaded_metrics['event_count']}."
+        )
 
     complete_cdc_batch(
         batch_id=batch_id,
@@ -178,32 +288,42 @@ def complete_multistage_cdc_run(
             ]
         ),
         transactions_processed=(
-            metrics[
+            transformed_metrics[
                 "transaction_count"
             ]
         ),
         events_processed=(
-            metrics["event_count"]
+            transformed_metrics[
+                "event_count"
+            ]
         ),
         insert_events=(
-            metrics["insert_count"]
+            transformed_metrics[
+                "insert_count"
+            ]
         ),
         update_events=(
-            metrics["update_count"]
+            transformed_metrics[
+                "update_count"
+            ]
         ),
         delete_events=(
-            metrics["delete_count"]
+            transformed_metrics[
+                "delete_count"
+            ]
         ),
     )
 
     complete_etl_run(
         run_id,
         rows_extracted=(
-            metrics["event_count"]
+            transformed_metrics[
+                "event_count"
+            ]
         ),
         rows_loaded=(
-            load_result[
-                "events_inserted"
+            loaded_metrics[
+                "event_count"
             ]
         ),
         rows_rejected=0,
@@ -212,10 +332,15 @@ def complete_multistage_cdc_run(
     result = {
         "run_id": run_id,
         "batch_id": batch_id,
-        **metrics,
+        **transformed_metrics,
         "events_inserted": (
             load_result[
                 "events_inserted"
+            ]
+        ),
+        "events_durable": (
+            loaded_metrics[
+                "event_count"
             ]
         ),
         "end_binlog_file": (
@@ -234,13 +359,25 @@ def complete_multistage_cdc_run(
         "Multi-stage CDC run completed. "
         "run_id=%s batch_id=%s "
         "transactions=%s events=%s "
-        "inserted=%s checkpoint=%s:%s",
+        "inserted_this_attempt=%s "
+        "durable=%s checkpoint=%s:%s",
         run_id,
         batch_id,
-        metrics["transaction_count"],
-        metrics["event_count"],
-        load_result["events_inserted"],
-        load_result["end_binlog_file"],
+        transformed_metrics[
+            "transaction_count"
+        ],
+        transformed_metrics[
+            "event_count"
+        ],
+        load_result[
+            "events_inserted"
+        ],
+        loaded_metrics[
+            "event_count"
+        ],
+        load_result[
+            "end_binlog_file"
+        ],
         load_result[
             "end_binlog_position"
         ],

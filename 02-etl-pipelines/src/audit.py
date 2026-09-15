@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from db import get_postgres_connection
 
 def start_etl_run(
@@ -110,124 +109,10 @@ def fail_etl_run(run_id, error_message):
         connection.commit()
 
 
-def get_watermark(
-    pipeline_name,
-    watermark_name,
-):
-    query = """
-        SELECT
-            watermark_timestamp,
-            watermark_order_id
-        FROM audit.pipeline_watermark
-        WHERE pipeline_name = %s
-          AND watermark_name = %s;
-    """
-
-    with get_postgres_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                query,
-                (
-                    pipeline_name,
-                    watermark_name,
-                ),
-            )
-
-            row = cursor.fetchone()
-
-    if row is None:
-        return None
-
-    return row[0], row[1]
 
 
-def initialize_watermark(
-        pipeline_name,
-        watermark_name,
-):
-
-    watermark_timestamp = datetime.min.replace(
-        tzinfo=timezone.utc
-    )
-    watermark_order_id = 0
-
-    select_query = """
-        SELECT
-            source_updated_at,
-            order_id
-        FROM dw.fact_sales
-        ORDER BY
-            source_updated_at DESC,
-            order_id DESC
-        LIMIT 1;
-    """
-    insert_query = """
-        INSERT INTO audit.pipeline_watermark
-        (
-            pipeline_name,
-            watermark_name,
-            watermark_timestamp,
-            watermark_order_id
-        )
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (pipeline_name, watermark_name)
-        DO NOTHING;
-    """
-
-    with get_postgres_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(select_query)
-            row = cursor.fetchone()
-            if row is not None:
-                watermark_timestamp = row[0]
-                watermark_order_id = row[1]
-            cursor.execute(
-                insert_query,
-                (
-                    pipeline_name,
-                    watermark_name,
-                    watermark_timestamp,
-                    watermark_order_id,
-                ),
-            )
-        connection.commit()
-
-    watermark = get_watermark(
-        pipeline_name,
-        watermark_name,
-    )
-    return watermark
 
 
-def update_watermark(
-    pipeline_name,
-    watermark_name,
-    watermark_timestamp,
-    watermark_order_id,
-):
-    query = """
-        UPDATE audit.pipeline_watermark
-        SET
-            watermark_timestamp = %s,
-            watermark_order_id = %s,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE pipeline_name = %s
-          AND watermark_name = %s;
-    """
-
-    with get_postgres_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                query,
-                (
-                    watermark_timestamp,
-                    watermark_order_id,
-                    pipeline_name,
-                    watermark_name,
-                ),
-            )
-
-        connection.commit()
 
 def mark_stale_etl_runs(
     pipeline_name,
@@ -485,6 +370,57 @@ def update_cdc_checkpoint(
             )
 
         connection.commit()
+
+def get_latest_cdc_batch_state(
+    pipeline_name,
+):
+    """
+    Return the most recent CDC batch and
+    its owning ETL run status.
+
+    The ETL run is the lifecycle authority;
+    cdc_batch stores CDC coordinates and
+    batch metrics.
+    """
+    query = """
+        SELECT
+            b.batch_id,
+            b.run_id,
+            r.status,
+            b.start_binlog_file,
+            b.start_binlog_position,
+            b.end_binlog_file,
+            b.end_binlog_position
+        FROM audit.cdc_batch AS b
+        INNER JOIN audit.etl_run AS r
+            ON r.run_id = b.run_id
+        WHERE r.pipeline_name = %s
+        ORDER BY b.batch_id DESC
+        LIMIT 1;
+    """
+
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query,
+                (pipeline_name,),
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "batch_id": row[0],
+        "run_id": row[1],
+        "status": row[2],
+        "start_binlog_file": row[3],
+        "start_binlog_position": row[4],
+        "end_binlog_file": row[5],
+        "end_binlog_position": row[6],
+    }
+
 
 def start_cdc_batch(
     run_id,

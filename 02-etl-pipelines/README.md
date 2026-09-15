@@ -1,58 +1,47 @@
 # ETL Pipelines
 
-This module contains the full-load, incremental, and Change Data Capture (CDC) pipelines used to move and synchronize e-commerce sales data from the MySQL OLTP source database into PostgreSQL analytical and CDC structures.
+This module contains the Full Load and Change Data Capture (CDC) pipelines used to bootstrap and continuously synchronize e-commerce sales data from the MySQL OLTP source into PostgreSQL analytical and CDC structures.
 
 ## Architecture
 
-The Full Load follows this data flow:
+The module has two final runtime responsibilities:
 
 ```text
-MySQL OLTP
-    |
-    v
-Extract
-    |
-    v
-PostgreSQL Staging
-    |
-    v
-Data Quality Checks
-    |
-    v
-Transform
-    |
-    v
-Dimensions
-    |
-    v
-Fact Table
-    |
-    v
-DW Quality Checks
-    |
-    v
-Reconciliation
+Full Load
+    MySQL current state
+          ↓
+    PostgreSQL staging
+          ↓
+    Data Warehouse rebuild
+
+CDC
+    MySQL binary log
+          ↓
+    RAW
+          ↓
+    TRANSFORMED
+          ↓
+    LOAD / APPLY
+          ├── FINAL CDC event
+          ├── DW mutation
+          └── APPLY checkpoint
 ```
 
-Pipeline executions are also registered in the audit layer.
+Full Load is the bootstrap/reconstruction path.
+
+CDC is the continuous synchronization path.
 
 ## ETL Flow
 
-The Full Load performs the following steps:
+Full Load rebuilds the warehouse from the current source state.
 
-1. Start an ETL audit run.
-2. Extract categories, countries, and orders from MySQL.
-3. Load the extracted data into PostgreSQL staging tables.
-4. Run staging Data Quality checks.
-5. Build the Date Dimension.
-6. Load the Date, Category, and Country dimensions.
-7. Resolve surrogate keys through dimension lookups.
-8. Load the Sales Fact table.
-9. Run Data Warehouse quality checks.
-10. Reconcile staging data with the Data Warehouse.
-11. Complete the audit run as `SUCCESS`.
+CDC consumes committed row-level changes from the MySQL binary log,
+persists them durably through RAW and TRANSFORMED stages, and applies
+each normalized event to both the FINAL CDC store and the analytical
+warehouse.
 
-If an error occurs, the pipeline logs the exception and marks the audit run as `FAILED`.
+Event ordering is preserved throughout CDC processing, and checkpoint
+advancement is coupled transactionally with durable downstream effects.
 
 ## Source Modules
 
@@ -133,13 +122,9 @@ Orchestrates the complete Full Load pipeline.
 
 It coordinates extraction, staging loads, transformations, Data Quality checks, Data Warehouse loads, reconciliation, logging, and auditing.
 
-### `incremental_load.py`
 
-Orchestrates the incremental ETL pipeline.
 
-It uses the composite `(updated_at, order_id)` watermark to detect new and updated source rows, processes dimension changes independently, performs quality and reconciliation checks, and advances the watermark only after successful completion.
-
-### `cdc.py`
+### `cdc/stream.py`
 
 Contains the core MySQL binlog CDC primitives.
 
@@ -156,7 +141,7 @@ Its responsibilities include:
 
 Only committed source transactions are exposed for durable CDC processing.
 
-### `cdc_extract.py`
+### `cdc/extract.py`
 
 Implements the CDC EXTRACT stage.
 
@@ -168,7 +153,7 @@ cdc.raw_change_event
 
 RAW event persistence and advancement of the READ checkpoint occur in the same PostgreSQL transaction.
 
-### `cdc_transform.py`
+### `cdc/transform.py`
 
 Implements the CDC TRANSFORM stage.
 
@@ -180,9 +165,9 @@ cdc.transformed_event
 
 The transformation stage maintains lineage between each RAW event and its transformed representation.
 
-### `cdc_load.py`
+### `cdc/apply.py`
 
-Implements the CDC LOAD stage.
+Implements the CDC LOAD/APPLY stage.
 
 It validates that a batch is ready for loading, reads transformed events, and persists final events into:
 
@@ -190,16 +175,18 @@ It validates that a batch is ready for loading, reads transformed events, and pe
 cdc.change_event
 ```
 
-Final event persistence and advancement of the APPLY checkpoint occur atomically.
+Final event persistence, analytical Data Warehouse mutation, and advancement of the APPLY checkpoint occur atomically in the same PostgreSQL transaction.
 
-### `cdc_pipeline.py`
+### `cdc/pipeline.py`
 
 Coordinates the multi-stage CDC execution.
 
 Its responsibilities include:
 
 * verifying CDC checkpoint readiness;
+* bootstrapping APPLY from the current MySQL binlog head only when CDC state is fresh;
 * initializing the READ checkpoint from APPLY when required;
+* refusing automatic bootstrap when durable CDC history already exists;
 * starting CDC audit runs and batches;
 * completing CDC audit metrics;
 * finalizing successful ETL runs;
@@ -215,7 +202,7 @@ Before loading data, the target tables are truncated and rebuilt from the source
 
 This makes the Full Load idempotent: running the pipeline multiple times with the same source data produces the same final Data Warehouse state.
 
-The Full Load remains available as the complete rebuild strategy. Incremental loading and log-based CDC are implemented as separate processing modes and are documented later in this module.
+The Full Load remains available as the complete rebuild strategy. After bootstrap, log-based CDC owns continuous synchronization of the analytical warehouse.
 
 ## Running the Pipeline
 
@@ -404,8 +391,6 @@ The test suite covers:
 * Data Quality checks;
 * ETL audit behavior;
 * reconciliation;
-* composite watermark ordering and advancement;
-* incremental update detection;
 * Slowly Changing Dimension behavior;
 * MySQL CDC row-event normalization;
 * committed CDC transaction handling;
@@ -420,7 +405,7 @@ The test suite covers:
 The validated M8 test result is:
 
 ```text
-125 passed
+135 passed
 ```
 
 ## Dependencies
@@ -454,8 +439,6 @@ This module currently implements:
 * Batch extraction for large order datasets.
 * PostgreSQL staging.
 * Full Load processing.
-* Composite-watermark incremental processing.
-* Incremental INSERT and UPDATE detection.
 * Date Dimension transformation.
 * Slowly Changing Dimensions.
 * Historical dimension versioning.
@@ -479,318 +462,7 @@ This module currently implements:
 
 Apache Airflow orchestration is implemented separately under the repository's `airflow` module.
 
-## Composite Watermark Incremental Load
 
-The incremental ETL pipeline now uses a composite watermark based on:
-
-```text
-(updated_at, order_id)
-```
-
-The timestamp identifies when a source row was last modified, while `order_id` acts as a deterministic tie-breaker when multiple rows share the same timestamp.
-
-The current watermark is stored in:
-
-```text
-audit.pipeline_watermark
-```
-
-using:
-
-```text
-watermark_timestamp
-watermark_order_id
-```
-
-For example:
-
-```text
-watermark_timestamp = 2026-08-21 03:00:00+00
-watermark_order_id  = 300002
-```
-
-### Incremental Extraction
-
-The source query processes rows that come after the current composite watermark:
-
-```sql
-SELECT
-    order_id,
-    order_date,
-    country_id,
-    category_id,
-    amount,
-    updated_at
-FROM orders
-WHERE
-    updated_at > %s
-    OR (
-        updated_at = %s
-        AND order_id > %s
-    )
-ORDER BY
-    updated_at,
-    order_id;
-```
-
-This provides lexicographic ordering:
-
-```text
-(updated_at, order_id)
-```
-
-For example:
-
-```text
-Current watermark:
-(2026-08-21 03:00:00, 300001)
-
-Source rows:
-(2026-08-21 03:00:00, 300001)
-(2026-08-21 03:00:00, 300002)
-
-Extracted:
-(2026-08-21 03:00:00, 300002)
-```
-
-The timestamp is compared first. If two rows have the same timestamp, `order_id` determines the next row.
-
-## Source Modification Tracking
-
-The MySQL `orders` table includes:
-
-```sql
-updated_at TIMESTAMP(6) NOT NULL
-    DEFAULT CURRENT_TIMESTAMP(6)
-    ON UPDATE CURRENT_TIMESTAMP(6)
-```
-
-The value is generated when the row is created and automatically refreshed when the source row is updated.
-
-The timestamp is propagated through the pipeline:
-
-```text
-MySQL orders.updated_at
-        ↓
-staging.orders.updated_at
-        ↓
-dw.fact_sales.source_updated_at
-```
-
-This allows the Data Warehouse to preserve the source modification timestamp.
-
-## Automatic Watermark Bootstrap
-
-If no composite watermark exists, the pipeline initializes it from the latest successfully loaded Data Warehouse row:
-
-```sql
-SELECT
-    source_updated_at,
-    order_id
-FROM dw.fact_sales
-ORDER BY
-    source_updated_at DESC,
-    order_id DESC
-LIMIT 1;
-```
-
-This allows the incremental pipeline to start immediately after a successful Full Load.
-
-If the Data Warehouse is empty, the pipeline uses a baseline watermark equivalent to:
-
-```text
-(datetime.min UTC, 0)
-```
-
-## Update Detection
-
-The previous simple watermark based only on `order_id` could detect new rows whose identifiers were greater than the stored watermark.
-
-However, it could not detect updates to previously processed orders.
-
-Example:
-
-```text
-Previous watermark:
-order_id = 300000
-
-Updated source row:
-order_id = 150000
-```
-
-A simple watermark would evaluate:
-
-```text
-150000 > 300000
-→ false
-```
-
-The composite watermark instead evaluates the modification timestamp:
-
-```text
-previous:
-(2026-08-21 02:39:01, 300000)
-
-updated row:
-(2026-08-21 02:51:42, 150000)
-
-result:
-updated timestamp is newer
-→ row is extracted
-```
-
-## Incremental Fact Upsert
-
-Because existing orders can now be re-extracted after an update, the incremental Data Warehouse load uses an UPSERT strategy.
-
-```sql
-ON CONFLICT (order_id)
-DO UPDATE
-SET
-    date_key = EXCLUDED.date_key,
-    country_key = EXCLUDED.country_key,
-    category_key = EXCLUDED.category_key,
-    amount = EXCLUDED.amount,
-    source_updated_at = EXCLUDED.source_updated_at;
-```
-
-This means the pipeline supports:
-
-```text
-new source order
-→ INSERT into fact_sales
-
-updated existing order
-→ UPDATE existing fact_sales row
-```
-
-## Watermark Advancement
-
-The composite watermark advances only after:
-
-```text
-Extract
-   ↓
-Staging Load
-   ↓
-Staging Quality Checks
-   ↓
-Dimension / Fact Load
-   ↓
-DW Quality Checks
-   ↓
-Reconciliation
-   ↓
-SUCCESS
-   ↓
-Update Composite Watermark
-```
-
-If the pipeline fails before completion, the previous watermark remains unchanged.
-
-This preserves safe retry behavior.
-
-## Composite Watermark Tests
-
-The test suite includes both unit and integration tests.
-
-Unit tests validate:
-
-- successful no-op execution;
-- watermark advancement after success;
-- watermark preservation after failure;
-- tuple ordering by timestamp and `order_id`;
-- tie-breaking when timestamps are equal.
-
-Integration tests validate real MySQL/PostgreSQL behavior:
-
-- extraction when two rows share the same `updated_at`;
-- detection of an update to an old `order_id` using a newer timestamp.
-
-Run only unit tests:
-
-```bash
-PYTHONPATH=02-etl-pipelines/src \
-pytest -v -m "not integration" 02-etl-pipelines/tests
-```
-
-Run only integration tests:
-
-```bash
-PYTHONPATH=02-etl-pipelines/src \
-pytest -v -m integration 02-etl-pipelines/tests
-```
-
-Run the complete test suite:
-
-```bash
-PYTHONPATH=02-etl-pipelines/src \
-pytest -v 02-etl-pipelines/tests
-```
-
-```text
-The repository-wide test suite now includes Full Load, incremental, SCD, and CDC coverage.
-
-For the current overall validated result, see the main `Tests` section above.
-```
-
-## Evolution from Simple to Composite Watermark
-
-The project intentionally evolved through two incremental strategies:
-
-```text
-v0.2.0
-Simple Watermark
-(order_id)
-
-        ↓
-
-v0.3.0
-Composite Watermark
-(updated_at, order_id)
-```
-
-The simple watermark remains useful for understanding the fundamentals of stateful incremental loading.
-
-The composite watermark adds support for updates to previously processed rows and deterministic ordering when multiple source records share the same modification timestamp.
-
-## Evolution from Composite Watermark to CDC
-
-The composite watermark pipeline provides state-based incremental processing.
-
-It detects:
-
-```text
-✓ new INSERTs
-✓ UPDATEs to existing rows
-✓ non-consecutive order IDs
-✓ rows sharing the same timestamp
-```
-
-However, a source query cannot detect a row after that row has been physically deleted.
-
-The project therefore evolves from state-based incremental extraction to log-based Change Data Capture:
-
-```text
-Composite Watermark
-(updated_at, order_id)
-        │
-        │  state-based
-        ▼
-INSERT + UPDATE detection
-
-        ↓
-
-MySQL Binary Log CDC
-        │
-        │  event-based
-        ▼
-INSERT + UPDATE + DELETE capture
-```
-
-The two strategies serve different purposes and coexist in the platform.
-
-The composite watermark pipeline maintains the analytical Data Warehouse incrementally, while CDC preserves the source change stream.
 
 ## Change Data Capture
 
@@ -908,6 +580,18 @@ READ == APPLY
 ```
 
 If READ is ahead of APPLY, the pipeline fails fast because durable staged work still needs to be completed.
+
+On a completely fresh CDC installation, where both checkpoints and CDC batch
+history are absent, the pipeline initializes APPLY from the current MySQL
+binary-log head and then initializes READ from APPLY.
+
+Automatic APPLY bootstrap is fail-closed. If APPLY is missing while READ or
+CDC batch history already exists, the pipeline raises an error instead of
+moving the checkpoint forward and potentially skipping durable work.
+
+Checkpoint bootstrap is idempotent. Once APPLY exists, later readiness checks
+reuse the durable coordinate rather than resetting it to the current MySQL
+binary-log head.
 
 ### Atomicity and Idempotency
 

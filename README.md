@@ -10,60 +10,64 @@ Design and implement a data platform that separates transactional workloads from
 
 ## Architecture
 
-The platform combines state-based ETL processing with log-based Change Data Capture.
+The final platform uses two complementary processing responsibilities:
+
+* **Full Load** for initial warehouse bootstrap and complete reconstruction.
+* **Change Data Capture (CDC)** for continuous synchronization after bootstrap.
 
 ```text
 MySQL OLTP
     │
-    ├──────────────────────────────────────────────┐
-    │                                              │
-    ▼                                              ▼
-Python ETL                                   MySQL Binary Log
-    │                                              │
-    ├── Full load                                 ▼
-    ├── Incremental load                     CDC EXTRACT
-    ├── Composite watermark                       │
-    └── Slowly Changing Dimensions                ▼
-    │                                      cdc.raw_change_event
-    │                                              │
-    ▼                                              ▼
-PostgreSQL Data Warehouse                    CDC TRANSFORM
-    │                                              │
-    ├── Dimensional model                         ▼
-    ├── Historical dimensions              cdc.transformed_event
-    ├── Temporal fact resolution                  │
-    └── ETL audit                                 ▼
-                                           CDC LOAD
-                                                  │
-                                                  ▼
-                                           cdc.change_event
-
-Apache Airflow
+    ├──────────────────── Full Load ────────────────────┐
+    │                                                  │
+    │                                                  ▼
+    │                                      PostgreSQL Data Warehouse
     │
-    ├── Incremental ETL orchestration
-    └── Multi-stage CDC orchestration
+    ▼
+MySQL Binary Log
+    │
+    ▼
+CDC EXTRACT
+    │
+    ├── durable RAW events
+    └── READ checkpoint
+    │
+    ▼
+cdc.raw_change_event
+    │
+    ▼
+CDC TRANSFORM
+    │
+    ▼
+cdc.transformed_event
+    │
+    ▼
+CDC LOAD / APPLY
+    │
+    ├── cdc.change_event
+    ├── Data Warehouse mutation
+    └── APPLY checkpoint
 ```
 
-The traditional ETL path loads analytical dimensional structures in PostgreSQL.
+The LOAD/APPLY stage persists final CDC events, applies their analytical
+effects to the dimensional warehouse, and advances the APPLY checkpoint
+within the same PostgreSQL transaction.
 
-The CDC path reads committed row changes directly from the MySQL binary log and persists them through durable RAW, TRANSFORMED, and FINAL layers.
-
-Apache Airflow orchestrates both processing models.
+Apache Airflow orchestrates CDC as a multi-stage pipeline with
+`max_active_runs=1`, preserving event ordering and preventing overlapping
+consumers.
 
 ## Project Modules
 
 - `01-oltp-database` — Operational sales database implemented with MySQL.
-- `02-etl-pipelines` — Python ETL pipelines for full and incremental data processing.
+- `02-etl-pipelines` — Python Full Load and CDC pipelines for warehouse bootstrap and continuous synchronization.
 - `03-data-warehouse` — Dimensional Data Warehouse implemented with PostgreSQL.
-- `04-business-intelligence` — Analytical modeling and reporting with Power BI.
 - `airflow` — Workflow orchestration and monitoring with Apache Airflow.
 
-The `05-big-data` directory is retained in the repository structure, but Spark/PySpark processing is intentionally outside the current project scope.
 
 ## Implemented Features
 
 - Full ETL load from MySQL to PostgreSQL.
-- Incremental loading with a composite `(updated_at, order_id)` watermark.
 - Idempotent fact loading with PostgreSQL upserts.
 - Slowly Changing Dimensions using Type 0, Type 1, and Type 2 strategies.
 - Historical dimension versioning with temporal validity intervals.
@@ -73,7 +77,7 @@ The `05-big-data` directory is retained in the repository structure, but Spark/P
 - Apache Airflow orchestration with explicit task dependencies.
 - Controlled failure handling and retry-safe audit behavior.
 - Automated ETL and SCD tests.
-- Fresh-database reproducibility validation.
+- Fresh-install reproducibility validated from empty Docker volumes through Full Load, CDC bootstrap, scheduled processing, and regression tests.
 - Log-based MySQL Change Data Capture for INSERT, UPDATE, and DELETE operations.
 - Transaction-aware CDC processing based on committed MySQL binlog transactions.
 - Durable RAW, TRANSFORMED, and FINAL CDC event layers in PostgreSQL.
@@ -149,74 +153,49 @@ docker compose ps
 
 ### Manual ETL Execution
 
-The ETL pipelines can be executed directly from the local Python environment without Airflow.
+The Full Load can be executed directly from the local Python environment.
 
-Run the initial full load:
+Run the warehouse bootstrap or reconstruction with:
 
 ```bash
 python 02-etl-pipelines/src/full_load.py
 ```
 
-The full load extracts the complete source dataset, loads the staging layer, performs data quality checks, builds the dimensions, resolves historical dimension relationships, loads the fact table, and records the execution in the ETL audit tables.
+The Full Load extracts the complete source dataset, loads staging,
+performs data quality checks, builds dimensions, resolves temporal
+relationships, loads the fact table, and records the execution in the
+ETL audit tables.
 
-After the initial load, run incremental processing with:
-
-```bash
-python 02-etl-pipelines/src/incremental_load.py
-```
-
-The incremental pipeline uses a composite `(updated_at, order_id)` watermark to extract new or changed orders. Dimension processing is executed independently from the presence of new order records so that Slowly Changing Dimension changes can still be detected.
-
-The watermark is advanced only after the incremental batch passes the required loading, quality, and reconciliation steps.
+After bootstrap, ongoing source synchronization is owned by the CDC
+pipeline rather than by periodic source-table polling.
 
 ### Airflow Orchestration
 
-Apache Airflow orchestrates the incremental ETL workflow through the `ecommerce_incremental_load` DAG.
+Apache Airflow orchestrates the continuous CDC workflow through the
+`ecommerce_change_data_capture` DAG.
 
-The DAG is scheduled daily at `02:00` using the cron expression:
+The CDC DAG runs every five minutes and uses:
 
-```text
-0 2 * * *
-```
+* explicit EXTRACT, TRANSFORM, LOAD, COMPLETE, and failure-finalization stages;
+* durable PostgreSQL RAW, TRANSFORMED, and FINAL event layers;
+* READ and APPLY binlog checkpoints;
+* transactionally coupled Data Warehouse mutation and APPLY advancement;
+* `max_active_runs=1` to preserve ordered single-consumer processing.
 
-It uses explicit task dependencies, ETL audit tracking, data quality checks, reconciliation, and controlled watermark advancement.
+The repository also contains:
 
-The DAG also sets:
+* `ecommerce_audit_reconciliation` — reconciles stale CDC audit executions;
+* `ecommerce_connectivity_check` — validates database connectivity;
 
-- `catchup=False`
-- `max_active_runs=1`
-
-These settings avoid automatic historical backfills and prevent overlapping incremental pipeline executions.
-
-Available DAGs include:
-
-- `ecommerce_incremental_load` — Main incremental ETL orchestration.
-- `ecommerce_connectivity_check` — Validates database connectivity.
-- `ecommerce_smoke_test` — Basic Airflow environment validation.
-- `ecommerce_audit_reconciliation` — Reconciles stale or incomplete ETL audit executions.
-- `ecommerce_change_data_capture` — Multi-stage log-based CDC orchestration from MySQL binlog to PostgreSQL.
-
-After starting the Docker services, list the available DAGs with:
-
-```bash
-docker compose exec airflow-scheduler airflow dags list
-```
-
-Trigger the incremental pipeline manually with:
+List the active DAG definitions directly from the current bundle with:
 
 ```bash
 docker compose exec airflow-scheduler \
-  airflow dags trigger ecommerce_incremental_load
+  airflow dags list -l -B dags-folder
 ```
 
-Check recent DAG runs with:
-
-```bash
-docker compose exec airflow-scheduler \
-  airflow dags list-runs ecommerce_incremental_load
-```
-
-The Airflow web interface is available through the port configured by `AIRFLOW_PORT` in `.env`.
+The Airflow web interface is exposed through the port configured by
+`AIRFLOW_PORT` in `.env`.
 
 ## Documentation
 
@@ -236,8 +215,7 @@ The core data platform is operational and currently includes:
 
 - MySQL OLTP source database.
 - PostgreSQL dimensional Data Warehouse.
-- Full and incremental ETL pipelines.
-- Composite watermark-based incremental processing.
+- Full Load bootstrap and CDC-based continuous synchronization.
 - ETL audit, quality checks, and reconciliation.
 - Apache Airflow orchestration.
 - Slowly Changing Dimensions with Type 0, Type 1, and Type 2 behavior.

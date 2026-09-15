@@ -20,23 +20,19 @@ if ETL_PATH not in sys.path:
     )
 
 
-from cdc_extract import (
+from cdc.extract import (
     extract_cdc_batch,
 )
-from cdc_load import (
+from cdc.apply import (
     load_transformed_cdc_batch,
 )
-from cdc_pipeline import (
-    complete_multistage_cdc_run,
-    start_multistage_cdc_run,
-)
-from cdc_transform import (
-    transform_cdc_batch,
-)
-from cdc_pipeline import (
+from cdc.pipeline import (
     complete_multistage_cdc_run,
     fail_multistage_cdc_run,
     start_multistage_cdc_run,
+)
+from cdc.transform import (
+    transform_cdc_batch,
 )
 
 

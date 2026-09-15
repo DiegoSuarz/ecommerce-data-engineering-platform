@@ -1,17 +1,4 @@
-from psycopg.types.json import Jsonb
-
-from audit import upsert_cdc_checkpoint
-from db import get_postgres_connection
-from load import make_json_safe
-from logger import get_logger
-
 import os
-
-from cdc import (
-    create_cdc_stream,
-    is_binlog_coordinate_ahead,
-    iter_raw_committed_transactions,
-)
 
 from psycopg.types.json import Jsonb
 
@@ -21,8 +8,9 @@ from audit import (
     update_cdc_checkpoint,
     upsert_cdc_checkpoint,
 )
-from cdc import (
+from cdc.stream import (
     create_cdc_stream,
+    is_binlog_coordinate_ahead,
     iter_raw_committed_transactions,
 )
 from db import (
@@ -32,12 +20,8 @@ from db import (
 from load import make_json_safe
 from logger import get_logger
 
-from db import (
-    get_mysql_cdc_settings,
-    get_postgres_connection,
-)
 
-logger = get_logger("cdc_extract")
+logger = get_logger("cdc.extract")
 
 
 PIPELINE_NAME = "change_data_capture"

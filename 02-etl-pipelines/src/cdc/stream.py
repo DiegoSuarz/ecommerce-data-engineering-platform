@@ -1,10 +1,5 @@
-import pymysql
 from datetime import datetime, timezone
 from pymysqlreplication import BinLogStreamReader
-
-from pymysqlreplication import (
-    BinLogStreamReader,
-)
 
 from pymysqlreplication.row_event import (
     DeleteRowsEvent,
@@ -16,6 +11,8 @@ from pymysqlreplication.event import (
     QueryEvent,
     XidEvent,
 )
+
+from db import get_mysql_cdc_connection
 
 ROW_EVENT_TYPES = (
     WriteRowsEvent,
@@ -33,26 +30,6 @@ CDC_TABLES = tuple(
     PRIMARY_KEY_COLUMNS_BY_TABLE_NAME
 )
 
-def get_current_binlog_coordinate(
-    connection_settings,
-):
-    with pymysql.connect(
-        **connection_settings
-    ) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SHOW MASTER STATUS"
-            )
-
-            row = cursor.fetchone()
-
-    if row is None:
-        raise RuntimeError(
-            "MySQL binary log coordinate "
-            "is not available."
-        )
-
-    return row[0], row[1]
 
 def binlog_timestamp_to_datetime(timestamp):
     return datetime.fromtimestamp(
@@ -82,67 +59,6 @@ def extract_primary_key(
     }
 
 
-def normalize_row_event(
-    event,
-    binlog_file,
-    event_end_position,
-    primary_key_columns,
-):
-    change_events = []
-
-    for row_index, row in enumerate(event.rows):
-        if isinstance(event, WriteRowsEvent):
-            operation = "INSERT"
-            before_values = None
-            after_values = row["values"]
-            current_values = after_values
-
-        elif isinstance(event, UpdateRowsEvent):
-            operation = "UPDATE"
-            before_values = row["before_values"]
-            after_values = row["after_values"]
-            current_values = after_values
-
-        elif isinstance(event, DeleteRowsEvent):
-            operation = "DELETE"
-            before_values = row["values"]
-            after_values = None
-            current_values = before_values
-
-        else:
-            raise TypeError(
-                "Unsupported CDC row event: "
-                f"{type(event).__name__}"
-            )
-
-        change_event = {
-            "event_key": build_event_key(
-                binlog_file,
-                event_end_position,
-                row_index,
-            ),
-            "operation": operation,
-            "source_schema": event.schema,
-            "source_table": event.table,
-            "primary_key": extract_primary_key(
-                current_values,
-                primary_key_columns,
-            ),
-            "before_values": before_values,
-            "after_values": after_values,
-            "binlog_file": binlog_file,
-            "event_end_position": event_end_position,
-            "row_index": row_index,
-            "event_timestamp": (
-                binlog_timestamp_to_datetime(
-                    event.timestamp
-                )
-            ),
-        }
-
-        change_events.append(change_event)
-
-    return change_events
 
 def iter_raw_committed_transactions(
     stream,
@@ -340,88 +256,6 @@ def commit_transaction_buffer(
     }
 
 
-def iter_committed_transactions(
-    stream,
-    primary_key_columns_by_table,
-):
-    transaction_buffer = None
-
-    for event in stream:
-        if isinstance(event, QueryEvent):
-            query = event.query
-
-            if isinstance(query, bytes):
-                query = query.decode("utf-8")
-
-            if query.strip().upper() == "BEGIN":
-                transaction_buffer = (
-                    start_transaction_buffer()
-                )
-
-            continue
-
-        if isinstance(event, ROW_EVENT_TYPES):
-            if transaction_buffer is None:
-                raise RuntimeError(
-                    "CDC row event received outside "
-                    "an active transaction."
-                )
-
-            table_key = (
-                event.schema,
-                event.table,
-            )
-
-            if (
-                table_key
-                not in primary_key_columns_by_table
-            ):
-                raise KeyError(
-                    "Primary key metadata not configured "
-                    f"for {event.schema}.{event.table}."
-                )
-
-            change_events = normalize_row_event(
-                event=event,
-                binlog_file=stream.log_file,
-                event_end_position=stream.log_pos,
-                primary_key_columns=(
-                    primary_key_columns_by_table[
-                        table_key
-                    ]
-                ),
-            )
-
-            append_change_events(
-                transaction_buffer,
-                change_events,
-            )
-
-            continue
-
-        if isinstance(event, XidEvent):
-            if transaction_buffer is None:
-                continue
-
-            if not transaction_buffer[
-                "change_events"
-            ]:
-                transaction_buffer = None
-                continue
-
-            transaction = commit_transaction_buffer(
-                transaction_buffer,
-                transaction_id=event.xid,
-                binlog_file=stream.log_file,
-                commit_position=stream.log_pos,
-                commit_timestamp=binlog_timestamp_to_datetime(
-                    event.timestamp
-                ),
-            )
-
-            transaction_buffer = None
-
-            yield transaction
 
 def build_primary_key_columns_by_table(
     source_schema,
@@ -438,6 +272,42 @@ def build_primary_key_columns_by_table(
             PRIMARY_KEY_COLUMNS_BY_TABLE_NAME.items()
         )
     }
+
+
+
+def get_current_binlog_coordinate():
+    """
+    Return the current MySQL binary-log head.
+
+    The dedicated CDC account is used because it
+    owns the replication metadata privileges.
+    """
+
+    connection = get_mysql_cdc_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(
+                "SHOW MASTER STATUS"
+            )
+
+            row = cursor.fetchone()
+
+        finally:
+            cursor.close()
+
+    finally:
+        connection.close()
+
+    if row is None:
+        raise RuntimeError(
+            "MySQL binary log status is "
+            "unavailable."
+        )
+
+    return row[0], int(row[1])
 
 
 def create_cdc_stream(

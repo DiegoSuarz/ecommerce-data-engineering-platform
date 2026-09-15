@@ -348,6 +348,108 @@ class TestCdcBatch:
             2,
         )
 
+    def test_get_latest_cdc_batch_state_tracks_latest_run(
+        self,
+        clean_test_cdc_batch,
+    ):
+        assert (
+            audit.get_latest_cdc_batch_state(
+                TEST_CDC_BATCH_PIPELINE_NAME
+            )
+            is None
+        )
+
+        first_run_id = self.create_test_run()
+
+        first_batch_id = start_cdc_batch(
+            first_run_id,
+            "binlog.000040",
+            1200,
+        )
+
+        complete_cdc_batch(
+            batch_id=first_batch_id,
+            end_binlog_file="binlog.000041",
+            end_binlog_position=1500,
+            transactions_processed=1,
+            events_processed=2,
+            insert_events=1,
+            update_events=1,
+            delete_events=0,
+        )
+
+        audit.complete_etl_run(
+            first_run_id,
+            rows_extracted=2,
+            rows_loaded=2,
+            rows_rejected=0,
+        )
+
+        second_run_id = self.create_test_run()
+
+        second_batch_id = start_cdc_batch(
+            second_run_id,
+            "binlog.000041",
+            1500,
+        )
+
+        state = (
+            audit.get_latest_cdc_batch_state(
+                TEST_CDC_BATCH_PIPELINE_NAME
+            )
+        )
+
+        assert state == {
+            "batch_id": second_batch_id,
+            "run_id": second_run_id,
+            "status": "RUNNING",
+            "start_binlog_file": (
+                "binlog.000041"
+            ),
+            "start_binlog_position": 1500,
+            "end_binlog_file": None,
+            "end_binlog_position": None,
+        }
+
+        complete_cdc_batch(
+            batch_id=second_batch_id,
+            end_binlog_file="binlog.000042",
+            end_binlog_position=1800,
+            transactions_processed=2,
+            events_processed=3,
+            insert_events=1,
+            update_events=1,
+            delete_events=1,
+        )
+
+        audit.complete_etl_run(
+            second_run_id,
+            rows_extracted=3,
+            rows_loaded=3,
+            rows_rejected=0,
+        )
+
+        state = (
+            audit.get_latest_cdc_batch_state(
+                TEST_CDC_BATCH_PIPELINE_NAME
+            )
+        )
+
+        assert state == {
+            "batch_id": second_batch_id,
+            "run_id": second_run_id,
+            "status": "SUCCESS",
+            "start_binlog_file": (
+                "binlog.000041"
+            ),
+            "start_binlog_position": 1500,
+            "end_binlog_file": (
+                "binlog.000042"
+            ),
+            "end_binlog_position": 1800,
+        }
+
+
 class TestMarkStaleEtlRuns:
     """
     Integration tests for audit.mark_stale_etl_runs().

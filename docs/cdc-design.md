@@ -4,7 +4,7 @@
 
 This document describes the Change Data Capture (CDC) architecture implemented in the E-Commerce Data Engineering Platform.
 
-The CDC pipeline complements the existing full-load and composite-watermark incremental pipelines by capturing row-level changes directly from the MySQL binary log.
+The platform uses Full Load for warehouse bootstrap or reconstruction and CDC as the continuous synchronization mechanism. CDC captures committed row-level changes directly from the MySQL binary log.
 
 The implementation captures:
 
@@ -22,19 +22,15 @@ The CDC pipeline is designed as a batch-oriented, log-based ingestion process or
 
 ## 2. Why Log-Based CDC
 
-The existing composite watermark pipeline detects new rows and updates by querying source tables according to:
+Continuous warehouse synchronization requires observing the actual source
+changes, including physical DELETE operations.
 
-```text
-(updated_at, order_id)
-```
+CDC reads committed row events directly from the MySQL binary log, so the
+pipeline receives INSERT, UPDATE, and DELETE events rather than inferring
+changes by repeatedly querying the latest source-table state.
 
-This approach is appropriate for state-based incremental processing, but it cannot reliably detect physical DELETE operations because deleted rows are no longer present in the source tables.
-
-CDC solves this limitation by reading MySQL row events directly from the binary log.
-
-The resulting architecture provides access to the change itself rather than only to the latest state of the source table.
-
----
+This makes the binary log the authoritative ordered change stream after
+the initial Full Load bootstrap.
 
 ## 3. MySQL Binary Log Configuration
 
@@ -168,13 +164,17 @@ This preserves source transaction boundaries during ingestion.
 
 ## 8. Durable Multi-Stage Architecture
 
-The final CDC architecture separates extraction, transformation, and loading into independent Airflow tasks.
+CDC separates extraction, transformation, and application into durable
+Airflow stages.
 
 ```text
 MySQL binary log
         │
         ▼
      EXTRACT
+        │
+        ├── persist RAW
+        └── advance READ
         │
         ▼
 cdc.raw_change_event
@@ -188,23 +188,19 @@ cdc.transformed_event
         ▼
       LOAD
         │
-        ▼
-cdc.change_event
+        ├── persist cdc.change_event
+        ├── apply event effects to the DW
+        └── advance APPLY
 ```
 
-The three CDC data layers are persisted in PostgreSQL.
+RAW persistence and READ advancement form one PostgreSQL transaction.
 
-This means event payloads do not depend on Airflow XCom for durability.
+FINAL event persistence, Data Warehouse mutation, and APPLY advancement
+form another PostgreSQL transaction.
 
-XCom is used only for small orchestration metadata such as:
-
-* `run_id`;
-* `batch_id`;
-* starting coordinates;
-* ending coordinates;
-* stage counts.
-
----
+Event payloads therefore do not depend on Airflow XCom for durability.
+XCom carries only small orchestration metadata such as run IDs, batch IDs,
+coordinates, and stage counts.
 
 ## 9. RAW Layer
 
@@ -393,33 +389,57 @@ The pipeline fails fast instead of starting another extraction batch.
 
 This prevents new MySQL reads from silently abandoning previously staged work.
 
-The current M8 recovery model expects the failed Airflow tasks belonging to that batch to be retried using the durable RAW and TRANSFORMED layers.
+Recovery retries or clears the failed tasks belonging to the same Airflow
+DagRun so processing resumes from durable RAW or TRANSFORMED staging.
 
-Automatic discovery and recovery of pending staged batches is a possible future hardening improvement.
+Before a new batch can begin, readiness validation requires aligned READ/APPLY
+checkpoints, a successful latest CDC batch, and agreement between the latest
+batch end coordinate and APPLY.
 
 ---
 
 ## 15. Checkpoint Bootstrap
 
-The APPLY checkpoint remains the original CDC compatibility checkpoint:
+CDC uses two durable checkpoints:
 
 ```text
-mysql_sales_binlog
+APPLY = mysql_sales_binlog
+READ  = mysql_sales_binlog_read
 ```
 
-The READ checkpoint is:
+On a completely fresh CDC installation, neither checkpoint exists and there
+is no CDC batch history.
+
+In that state only, the pipeline reads the current MySQL binary-log head and
+initializes APPLY at that coordinate. READ is then initialized from APPLY.
 
 ```text
-mysql_sales_binlog_read
+current MySQL binlog head
+          |
+          v
+        APPLY
+          |
+          v
+         READ
 ```
 
-When the READ checkpoint does not yet exist, it is initialized from APPLY.
+This establishes the CDC boundary after the Full Load bootstrap so historical
+source rows already represented in the analytical warehouse are not replayed
+as new CDC changes.
 
-It is not initialized from the current MySQL binary-log head.
+Automatic APPLY bootstrap is deliberately fail-closed.
 
-This prevents the multi-stage migration from accidentally skipping changes that have already been acknowledged by the previous CDC implementation.
+If APPLY is missing while READ already exists, or while previous CDC batch
+history exists, the pipeline raises an error instead of silently initializing
+APPLY at the current MySQL head. Moving APPLY in that state could skip durable
+or previously acknowledged CDC work.
 
-Checkpoint initialization is idempotent and does not overwrite an existing READ checkpoint.
+When APPLY exists but READ alone is missing, READ can safely be initialized
+from APPLY.
+
+Checkpoint initialization is idempotent and does not overwrite existing
+coordinates. Once APPLY exists, normal readiness checks reuse the durable
+checkpoint rather than resetting it to the current MySQL binary-log head.
 
 ---
 
@@ -726,14 +746,117 @@ APPLY = binlog.000033:1120
 
 This validates successful no-op execution and checkpoint stability.
 
+### Fresh-Install Reproducibility Validation
+
+The final CDC-first architecture was also validated from a clean local
+installation after removing the persistent Docker volumes for MySQL,
+PostgreSQL, and the Airflow metadata database.
+
+The fresh infrastructure bootstrap recreated the databases and automatically
+provisioned the required Airflow connections:
+
+```text
+mysql_source
+mysql_cdc_source
+postgres_dw
+```
+
+The fresh MySQL source contained:
+
+```text
+categories = 5
+countries  = 56
+orders     = 300000
+```
+
+A Full Load then reconstructed the analytical warehouse:
+
+```text
+dim_category = 5
+dim_country  = 56
+dim_date     = 1096
+fact_sales   = 300000
+```
+
+With no existing CDC checkpoints or batch history, CDC readiness safely
+bootstrapped both durable checkpoints from the current MySQL binary-log head:
+
+```text
+READ  = binlog.000003:157
+APPLY = binlog.000003:157
+```
+
+A first zero-event CDC DagRun completed successfully without changing the
+warehouse or CDC event layers:
+
+```text
+transactions = 0
+events       = 0
+
+READ  = binlog.000003:157
+APPLY = binlog.000003:157
+```
+
+The final mutation probe captured two complete INSERT / UPDATE / DELETE
+cycles over category, country, and order records. The resulting CDC batch
+processed:
+
+```text
+transactions = 6
+events       = 18
+
+INSERT = 6
+UPDATE = 6
+DELETE = 6
+
+RAW         = 18
+TRANSFORMED = 18
+FINAL       = 18
+```
+
+The batch advanced both checkpoints atomically across the pending source
+range:
+
+```text
+start = binlog.000003:157
+end   = binlog.000003:5775
+
+READ  = binlog.000003:5775
+APPLY = binlog.000003:5775
+```
+
+The analytical warehouse preserved the resulting SCD history while the
+final DELETE removed the probe fact:
+
+```text
+dim_category = 9
+dim_country  = 60
+dim_date     = 1097
+fact_sales   = 300000
+```
+
+All probe dimension versions were historical after the final DELETE, and
+the probe order was absent from `dw.fact_sales`.
+
+A subsequent scheduled CDC run completed as a no-op at:
+
+```text
+binlog.000003:5775 -> binlog.000003:5775
+```
+
+This fresh-install validation demonstrates the complete recovery path from
+empty infrastructure through Full Load bootstrap, CDC checkpoint bootstrap,
+real Airflow execution, CDC-to-DW mutation, checkpoint convergence, and
+retry-safe no-op processing.
+
 ---
 
 ## 25. Automated Validation
 
-After the multi-stage implementation and end-to-end validation, the complete ETL test suite passed:
+At the final CDC-first baseline, after repository cleanup and fresh-install hardening, the complete ETL test suite passed:
 
 ```text
-125 passed
+122 passed
 ```
 
 Additional final checks included:

@@ -2,77 +2,46 @@
 
 ## Overview
 
-Apache Airflow orchestrates both the incremental ETL pipeline and the multi-stage Change Data Capture (CDC) pipeline of the E-Commerce Data Engineering Platform.
+Apache Airflow orchestrates the operational workflows of the
+E-Commerce Data Engineering Platform.
 
-The orchestration layer is responsible for:
+Its primary production responsibility is the multi-stage Change Data
+Capture pipeline that continuously synchronizes MySQL source changes
+into PostgreSQL CDC storage and the analytical Data Warehouse.
 
-* Scheduling the incremental ETL pipeline.
-* Scheduling and coordinating the CDC pipeline.
-* Managing task retries and execution timeouts.
-* Connecting Airflow with the MySQL source database.
-* Connecting the CDC reader with the MySQL binary log.
-* Connecting Airflow with the PostgreSQL data warehouse.
-* Recording Airflow execution metadata in the ETL audit tables.
-* Coordinating CDC batch and checkpoint state.
-* Reconciling ETL runs that remain incorrectly marked as `RUNNING`.
+Airflow also provides stale-run reconciliation, connectivity checks,
+smoke validation, retry policies, and orchestration metadata.
 
-Airflow runs locally using Docker Compose.
-
----
 ## Architecture
 
-The orchestration environment supports two main data-processing paths.
-
 ```text
-                         Apache Airflow
-                               |
-                  +------------+-------------+
-                  |                          |
-                  v                          v
-          Incremental ETL                 CDC Pipeline
-                  |                          |
-                  v                          v
-            mysql_source              mysql_cdc_source
-                  |                          |
-                  v                          v
-             MySQL OLTP              MySQL Binary Log
-                  |                          |
-                  v                          v
-         PostgreSQL DW                CDC EXTRACT
-                  |                          |
-                  |                          v
-                  |                cdc.raw_change_event
-                  |                          |
-                  |                          v
-                  |                   CDC TRANSFORM
-                  |                          |
-                  |                          v
-                  |              cdc.transformed_event
-                  |                          |
-                  |                          v
-                  |                      CDC LOAD
-                  |                          |
-                  |                          v
-                  +----------------> cdc.change_event
-                               |
-                               v
-                         audit.etl_run
+MySQL Binary Log
+        │
+        ▼
+ecommerce_change_data_capture
+        │
+        ├── start_cdc
+        ├── extract_cdc
+        ├── transform_cdc
+        ├── load_cdc
+        ├── complete_cdc
+        └── fail_cdc
+                │
+                ▼
+           PostgreSQL
+                │
+                ├── CDC durable layers
+                ├── Data Warehouse
+                └── audit metadata
+
+ecommerce_audit_reconciliation
+        │
+        └── marks stale CDC audit runs as failed
+
+ecommerce_connectivity_check
+        │
+        └── operational validation
 ```
-
-Airflow uses a separate PostgreSQL database for its own internal metadata.
-
-The Airflow metadata database is independent from the PostgreSQL data warehouse used by the ETL and CDC pipelines.
-
-CDC event payloads are persisted in PostgreSQL tables and are not transported through Airflow XCom.
-
-XCom is used only for small orchestration metadata such as:
-
-* `run_id`;
-* `batch_id`;
-* start and end binlog coordinates;
-* stage counts.
-
----
 
 ## Docker Services
 
@@ -194,94 +163,51 @@ This keeps database credentials outside the Python source code.
 
 ---
 
-### Creating the connections
+### Automatic connection bootstrap
 
-Load the local environment variables:
+Airflow database connections are created automatically by
+`airflow/scripts/bootstrap_connections.py`.
 
-```bash
-set -a
-source .env
-set +a
-```
+The `airflow-init` service runs the connection bootstrap immediately
+after `airflow db migrate`, so a fresh Airflow metadata database can
+reconstruct the project connections without manual CLI commands.
 
-Create the MySQL source connection:
+The bootstrap configures:
 
-```bash
-docker compose exec airflow-scheduler \
-  airflow connections add mysql_source \
-  --conn-type mysql \
-  --conn-host mysql \
-  --conn-port 3306 \
-  --conn-schema "$MYSQL_DATABASE" \
-  --conn-login "$MYSQL_USER" \
-  --conn-password "$MYSQL_PASSWORD"
-```
+* `mysql_source`;
+* `mysql_cdc_source`;
+* `postgres_dw`.
 
-Create the dedicated MySQL CDC source connection:
+Connection credentials are read from the local `.env` file through
+Docker Compose environment variables. Secrets are not stored in the
+bootstrap script or committed to Git.
 
-    docker compose exec airflow-scheduler \
-      airflow connections add mysql_cdc_source \
-      --conn-type mysql \
-      --conn-host mysql \
-      --conn-port 3306 \
-      --conn-schema "$MYSQL_DATABASE" \
-      --conn-login "$MYSQL_CDC_USER" \
-      --conn-password "$MYSQL_CDC_PASSWORD"
+The MySQL and PostgreSQL connection hosts use the Docker Compose service
+names `mysql` and `postgres`, respectively.
 
-Create the PostgreSQL data warehouse connection:
+The bootstrap is safe to rerun for the project connections. To reapply
+connection configuration after changing local credentials:
 
 ```bash
-docker compose exec airflow-scheduler \
-  airflow connections add postgres_dw \
-  --conn-type postgres \
-  --conn-host postgres \
-  --conn-port 5432 \
-  --conn-schema "$POSTGRES_DATABASE" \
-  --conn-login "$POSTGRES_USER" \
-  --conn-password "$POSTGRES_PASSWORD"
+docker compose run --rm airflow-init
 ```
 
-Verify them:
+Verify the resulting connections:
 
 ```bash
 docker compose exec airflow-scheduler \
   airflow connections list
 ```
+
 > The current authentication setup is intended for local development only.
 > Use a production-grade Airflow authentication manager for production deployments.
 
 
 ## DAGs
 
-The project currently contains five Airflow DAGs.
+The project currently contains three Airflow DAGs.
 
-### ecommerce_incremental_load
 
-Main production ETL orchestration DAG.
-
-```text
-Schedule: 0 2 * * *
-Timezone: America/Lima
-Max active runs: 1
-```
-
-The DAG runs the incremental ETL pipeline every day at 02:00 Lima time.
-
-The task executes:
-
-```text
-run_incremental_pipeline
-```
-
-The task loads the existing ETL implementation from:
-
-```text
-02-etl-pipelines/src/incremental_load.py
-```
-
-Airflow therefore orchestrates the ETL without duplicating the ETL business logic inside the DAG.
-
----
 
 ### ecommerce_change_data_capture
 
@@ -328,11 +254,11 @@ The task responsibilities are:
 The DAG delegates CDC processing logic to:
 
 ```text
-02-etl-pipelines/src/cdc.py
-02-etl-pipelines/src/cdc_extract.py
-02-etl-pipelines/src/cdc_transform.py
-02-etl-pipelines/src/cdc_load.py
-02-etl-pipelines/src/cdc_pipeline.py
+02-etl-pipelines/src/cdc/stream.py
+02-etl-pipelines/src/cdc/extract.py
+02-etl-pipelines/src/cdc/transform.py
+02-etl-pipelines/src/cdc/apply.py
+02-etl-pipelines/src/cdc/pipeline.py
 ```
 
 Airflow therefore coordinates the CDC pipeline without embedding CDC business logic in the DAG itself.
@@ -397,48 +323,21 @@ This DAG has no automatic schedule and can be triggered manually.
 
 ---
 
-### ecommerce_smoke_test
-
-Simple Airflow validation DAG.
-
-It verifies that the Airflow orchestration environment can successfully
-execute a task.
-
-This DAG has no automatic schedule.
-
----
-
 ## Scheduling
 
 The production schedules are:
 
-| DAG                              | Schedule        | Purpose                        |
-| -------------------------------- | --------------- | ------------------------------ |
-| `ecommerce_incremental_load`     | `0 2 * * *`     | Daily incremental ETL          |
-| `ecommerce_audit_reconciliation` | `30 2 * * *`    | Daily stale-run reconciliation |
-| `ecommerce_change_data_capture`  | every 5 minutes | Continuous batch-oriented CDC  |
+| DAG | Schedule | Purpose |
+| --- | --- | --- |
+| `ecommerce_change_data_capture` | every 5 minutes | Continuous batch-oriented CDC |
+| `ecommerce_audit_reconciliation` | `30 2 * * *` | Daily stale-run reconciliation |
 
-The daily incremental and reconciliation DAGs use:
+`ecommerce_audit_reconciliation` uses the `America/Lima` timezone.
 
-```text
-America/Lima
-```
-
-as their timezone.
-
-The reconciliation DAG runs after the incremental ETL schedule so it can detect ETL executions that did not reach a final audit state.
-
----
+The CDC DAG uses `max_active_runs=1` so that only one consumer execution
+can own ordered binlog processing at a time.
 
 ## Retry and Timeout Policy
-
-The incremental ETL task uses:
-
-```text
-Retries: 2
-Retry delay: 30 seconds
-Execution timeout: 5 minutes
-```
 
 The audit reconciliation task uses:
 
@@ -472,13 +371,9 @@ fail_cdc
 Retries: 0
 ```
 
-CDC task retries are safe because event persistence is idempotent and checkpoint advancement is transactionally coupled with durable persistence.
-
-Retries allow Airflow to recover from temporary failures.
-
-Execution timeouts prevent tasks from running indefinitely.
-
----
+CDC retries are safe because durable event persistence is idempotent,
+READ/APPLY progression is explicitly controlled, and committed LOAD
+replay avoids reapplying Data Warehouse effects.
 
 ## ETL Audit Correlation
 
@@ -521,86 +416,24 @@ This improves pipeline observability and troubleshooting.
 
 ---
 
-## Incremental Loading
 
-The ETL pipeline uses a composite watermark.
-
-The watermark is stored in:
-
-```text
-audit.pipeline_watermark
-```
-
-The current watermark strategy uses:
-
-```text
-(updated_at, order_id)
-```
-
-This provides a deterministic tie-breaker when multiple source rows have the
-same `updated_at` timestamp.
-
-The watermark is updated only after the incremental pipeline completes
-successfully.
-
-If the pipeline fails, the previous watermark remains unchanged.
-
-This allows the failed batch to be processed again during the next execution.
-
----
 
 ## Stale Run Reconciliation
 
-An ETL execution normally follows this lifecycle:
+The `ecommerce_audit_reconciliation` DAG detects CDC audit executions
+that remain in `RUNNING` state beyond the configured threshold.
+
+It reconciles:
 
 ```text
-RUNNING
-   |
-   +------> SUCCESS
-   |
-   +------> FAILED
+pipeline_name = change_data_capture
 ```
 
-Unexpected interruptions can leave an audit record in:
+Stale-run reconciliation is a maintenance safeguard for executions that
+terminate without reaching normal success or failure finalization.
 
-```text
-RUNNING
-```
-
-even when the execution no longer exists.
-
-The reconciliation process detects these stale records and changes them to:
-
-```text
-FAILED
-```
-
-The current stale threshold is:
-
-```text
-15 minutes
-```
-
-The reconciliation logic is implemented in:
-
-```text
-02-etl-pipelines/src/audit.py
-```
-
-through:
-
-```text
-mark_stale_etl_runs()
-```
-
-Integration tests validate that the function:
-
-- Marks stale `RUNNING` executions as `FAILED`.
-- Does not modify recent `RUNNING` executions.
-- Does not modify executions from another pipeline.
-- Returns the IDs of the audit runs that were updated.
-
----
+It does not move READ or APPLY checkpoints and does not mutate CDC event
+payloads or Data Warehouse state.
 
 ## CDC Checkpoint and Failure Model
 
@@ -673,15 +506,23 @@ inside one PostgreSQL transaction.
 
 This keeps durable data and checkpoint state consistent during failures and retries.
 
-### Known Hardening Area
+### Audit and Checkpoint Readiness
 
-If LOAD succeeds and advances APPLY, but `complete_cdc` fails afterward, READ and APPLY may already be equal even though the audit run is incomplete.
+Checkpoint equality alone is not sufficient to start a new CDC batch.
 
-A real validation run exposed this condition while preserving the CDC data correctly.
+The pipeline also verifies that the latest CDC batch completed successfully
+and that its recorded end coordinate matches the durable APPLY checkpoint.
 
-A stronger unfinished-run or unfinished-batch readiness check is reserved for later pipeline hardening.
+This prevents a new batch from starting when LOAD has already advanced APPLY
+but the previous audit lifecycle remains incomplete.
 
----
+Fresh checkpoint bootstrap is allowed only when APPLY and READ are both
+absent and no previous CDC batch history exists. In that state, APPLY is
+initialized from the current MySQL binary-log head and READ is initialized
+from APPLY.
+
+If partial or historical CDC state exists while APPLY is missing, the
+pipeline fails closed instead of silently moving the checkpoint forward.
 
 ## Validation
 
@@ -744,7 +585,7 @@ pytest -q 02-etl-pipelines/tests
 Validated result:
 
 ```text
-125 passed
+122 passed
 ```
 
 The CDC orchestration has also been validated end to end with one committed MySQL transaction containing:
