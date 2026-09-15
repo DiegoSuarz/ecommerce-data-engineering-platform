@@ -4,7 +4,7 @@
 
 This document describes the Change Data Capture (CDC) architecture implemented in the E-Commerce Data Engineering Platform.
 
-The CDC pipeline complements the existing full-load and composite-watermark incremental pipelines by capturing row-level changes directly from the MySQL binary log.
+The platform uses Full Load for warehouse bootstrap or reconstruction and CDC as the continuous synchronization mechanism. CDC captures committed row-level changes directly from the MySQL binary log.
 
 The implementation captures:
 
@@ -22,19 +22,15 @@ The CDC pipeline is designed as a batch-oriented, log-based ingestion process or
 
 ## 2. Why Log-Based CDC
 
-The existing composite watermark pipeline detects new rows and updates by querying source tables according to:
+Continuous warehouse synchronization requires observing the actual source
+changes, including physical DELETE operations.
 
-```text
-(updated_at, order_id)
-```
+CDC reads committed row events directly from the MySQL binary log, so the
+pipeline receives INSERT, UPDATE, and DELETE events rather than inferring
+changes by repeatedly querying the latest source-table state.
 
-This approach is appropriate for state-based incremental processing, but it cannot reliably detect physical DELETE operations because deleted rows are no longer present in the source tables.
-
-CDC solves this limitation by reading MySQL row events directly from the binary log.
-
-The resulting architecture provides access to the change itself rather than only to the latest state of the source table.
-
----
+This makes the binary log the authoritative ordered change stream after
+the initial Full Load bootstrap.
 
 ## 3. MySQL Binary Log Configuration
 
@@ -168,13 +164,17 @@ This preserves source transaction boundaries during ingestion.
 
 ## 8. Durable Multi-Stage Architecture
 
-The final CDC architecture separates extraction, transformation, and loading into independent Airflow tasks.
+CDC separates extraction, transformation, and application into durable
+Airflow stages.
 
 ```text
 MySQL binary log
         │
         ▼
      EXTRACT
+        │
+        ├── persist RAW
+        └── advance READ
         │
         ▼
 cdc.raw_change_event
@@ -188,23 +188,19 @@ cdc.transformed_event
         ▼
       LOAD
         │
-        ▼
-cdc.change_event
+        ├── persist cdc.change_event
+        ├── apply event effects to the DW
+        └── advance APPLY
 ```
 
-The three CDC data layers are persisted in PostgreSQL.
+RAW persistence and READ advancement form one PostgreSQL transaction.
 
-This means event payloads do not depend on Airflow XCom for durability.
+FINAL event persistence, Data Warehouse mutation, and APPLY advancement
+form another PostgreSQL transaction.
 
-XCom is used only for small orchestration metadata such as:
-
-* `run_id`;
-* `batch_id`;
-* starting coordinates;
-* ending coordinates;
-* stage counts.
-
----
+Event payloads therefore do not depend on Airflow XCom for durability.
+XCom carries only small orchestration metadata such as run IDs, batch IDs,
+coordinates, and stage counts.
 
 ## 9. RAW Layer
 

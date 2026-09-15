@@ -174,7 +174,7 @@ This value is a technical sentinel. It does not mean that the dimension members 
 
 The boundary is applied only when creating the initial dimension versions during the full load.
 
-Incremental processing does not use this sentinel for new dimension members. New members discovered later use their source `updated_at` timestamp as their `effective_from`.
+CDC processing does not use this sentinel for new dimension members. New members discovered after bootstrap use their source `updated_at` timestamp as their `effective_from`.
 
 ## 9. Database Constraints
 
@@ -254,27 +254,5 @@ The automated test suite covers:
 - SCD2 hash calculation and normalization.
 - Initial historical boundary behavior.
 - Temporal surrogate-key resolution.
-- Incremental pipeline behavior.
+- CDC-driven dimension mutation behavior.
 - Audit and orchestration integration.
-
-Fresh-database validation was also performed by rebuilding the MySQL source and PostgreSQL warehouse from their migration scripts and running the full ETL pipeline.
-
-The fresh full load produced:
-
-- 5 category dimension rows.
-- 56 country dimension rows.
-- 1,099 date dimension rows.
-- 300,005 fact rows.
-- 300,066 extracted source rows.
-- 301,165 loaded warehouse rows.
-
-All 300,005 fact rows resolved valid category and country dimension versions.
-
-Additional integrity checks confirmed:
-
-- One current version per business entity.
-- No invalid temporal intervals.
-- No invalid `dim_country` hashes.
-- No unresolved temporal fact relationships.
-
-The complete automated test suite passed with 46 tests.

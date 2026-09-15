@@ -61,7 +61,7 @@ def ecommerce_audit_reconciliation():
         from audit import mark_stale_etl_runs
 
         stale_runs = mark_stale_etl_runs(
-            pipeline_name="incremental_load",
+            pipeline_name="change_data_capture",
             stale_after_minutes=15,
         )
 
