@@ -517,3 +517,79 @@ def test_iter_raw_committed_transactions():
     )
 
     assert "primary_key" not in raw_event
+
+
+def test_get_current_binlog_coordinate(
+    monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from cdc import stream as cdc_stream
+
+    connection = MagicMock()
+    cursor = MagicMock()
+
+    connection.cursor.return_value = cursor
+
+    cursor.fetchone.return_value = (
+        "binlog.000042",
+        157,
+        "",
+        "",
+        "",
+    )
+
+    monkeypatch.setattr(
+        cdc_stream,
+        "get_mysql_cdc_connection",
+        lambda: connection,
+    )
+
+    coordinate = (
+        cdc_stream
+        .get_current_binlog_coordinate()
+    )
+
+    assert coordinate == (
+        "binlog.000042",
+        157,
+    )
+
+    cursor.execute.assert_called_once_with(
+        "SHOW MASTER STATUS"
+    )
+
+    cursor.close.assert_called_once_with()
+    connection.close.assert_called_once_with()
+
+
+def test_get_current_binlog_coordinate_requires_binary_log(
+    monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from cdc import stream as cdc_stream
+
+    connection = MagicMock()
+    cursor = MagicMock()
+
+    connection.cursor.return_value = cursor
+    cursor.fetchone.return_value = None
+
+    monkeypatch.setattr(
+        cdc_stream,
+        "get_mysql_cdc_connection",
+        lambda: connection,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="binary log status",
+    ):
+        (
+            cdc_stream
+            .get_current_binlog_coordinate()
+        )
+
+    cursor.close.assert_called_once_with()
+    connection.close.assert_called_once_with()

@@ -4,6 +4,7 @@ from audit import (
     fail_etl_run,
     get_cdc_checkpoint,
     get_latest_cdc_batch_state,
+    initialize_cdc_checkpoint,
     initialize_cdc_checkpoint_from_checkpoint,
     start_cdc_batch,
     start_etl_run,
@@ -11,6 +12,9 @@ from audit import (
 from cdc.apply import (
     get_loaded_batch_metrics,
     get_transformed_batch_metrics,
+)
+from cdc.stream import (
+    get_current_binlog_coordinate,
 )
 from logger import get_logger
 
@@ -38,9 +42,50 @@ def get_multistage_checkpoints():
     )
 
     if apply_checkpoint is None:
-        raise RuntimeError(
-            "CDC APPLY checkpoint does "
-            "not exist."
+        read_checkpoint = (
+            get_cdc_checkpoint(
+                PIPELINE_NAME,
+                READ_CHECKPOINT_NAME,
+            )
+        )
+
+        latest_batch = (
+            get_latest_cdc_batch_state(
+                PIPELINE_NAME
+            )
+        )
+
+        if (
+            read_checkpoint is not None
+            or latest_batch is not None
+        ):
+            raise RuntimeError(
+                "CDC APPLY checkpoint is missing "
+                "but durable CDC state already "
+                "exists. Automatic bootstrap is "
+                "only allowed for a fresh CDC "
+                "state."
+            )
+
+        current_coordinate = (
+            get_current_binlog_coordinate()
+        )
+
+        apply_checkpoint = (
+            initialize_cdc_checkpoint(
+                PIPELINE_NAME,
+                APPLY_CHECKPOINT_NAME,
+                current_coordinate[0],
+                current_coordinate[1],
+            )
+        )
+
+        logger.info(
+            "CDC APPLY checkpoint initialized "
+            "from current MySQL binlog head. "
+            "checkpoint=%s:%s",
+            apply_checkpoint[0],
+            apply_checkpoint[1],
         )
 
     read_checkpoint = (

@@ -389,33 +389,57 @@ The pipeline fails fast instead of starting another extraction batch.
 
 This prevents new MySQL reads from silently abandoning previously staged work.
 
-The current M8 recovery model expects the failed Airflow tasks belonging to that batch to be retried using the durable RAW and TRANSFORMED layers.
+Recovery retries or clears the failed tasks belonging to the same Airflow
+DagRun so processing resumes from durable RAW or TRANSFORMED staging.
 
-Automatic discovery and recovery of pending staged batches is a possible future hardening improvement.
+Before a new batch can begin, readiness validation requires aligned READ/APPLY
+checkpoints, a successful latest CDC batch, and agreement between the latest
+batch end coordinate and APPLY.
 
 ---
 
 ## 15. Checkpoint Bootstrap
 
-The APPLY checkpoint remains the original CDC compatibility checkpoint:
+CDC uses two durable checkpoints:
 
 ```text
-mysql_sales_binlog
+APPLY = mysql_sales_binlog
+READ  = mysql_sales_binlog_read
 ```
 
-The READ checkpoint is:
+On a completely fresh CDC installation, neither checkpoint exists and there
+is no CDC batch history.
+
+In that state only, the pipeline reads the current MySQL binary-log head and
+initializes APPLY at that coordinate. READ is then initialized from APPLY.
 
 ```text
-mysql_sales_binlog_read
+current MySQL binlog head
+          |
+          v
+        APPLY
+          |
+          v
+         READ
 ```
 
-When the READ checkpoint does not yet exist, it is initialized from APPLY.
+This establishes the CDC boundary after the Full Load bootstrap so historical
+source rows already represented in the analytical warehouse are not replayed
+as new CDC changes.
 
-It is not initialized from the current MySQL binary-log head.
+Automatic APPLY bootstrap is deliberately fail-closed.
 
-This prevents the multi-stage migration from accidentally skipping changes that have already been acknowledged by the previous CDC implementation.
+If APPLY is missing while READ already exists, or while previous CDC batch
+history exists, the pipeline raises an error instead of silently initializing
+APPLY at the current MySQL head. Moving APPLY in that state could skip durable
+or previously acknowledged CDC work.
 
-Checkpoint initialization is idempotent and does not overwrite an existing READ checkpoint.
+When APPLY exists but READ alone is missing, READ can safely be initialized
+from APPLY.
+
+Checkpoint initialization is idempotent and does not overwrite existing
+coordinates. Once APPLY exists, normal readiness checks reuse the durable
+checkpoint rather than resetting it to the current MySQL binary-log head.
 
 ---
 

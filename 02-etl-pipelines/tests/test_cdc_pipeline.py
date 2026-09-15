@@ -602,3 +602,207 @@ def test_ready_accepts_completed_batch_matching_apply(
         "binlog.000040",
         1200,
     )
+
+
+def test_bootstraps_fresh_apply_and_read(
+    monkeypatch,
+):
+    checkpoints = {}
+
+    def get_checkpoint(
+        pipeline_name,
+        checkpoint_name,
+    ):
+        return checkpoints.get(
+            checkpoint_name
+        )
+
+    def initialize_checkpoint(
+        pipeline_name,
+        checkpoint_name,
+        binlog_file,
+        binlog_position,
+    ):
+        checkpoints.setdefault(
+            checkpoint_name,
+            (
+                binlog_file,
+                binlog_position,
+            ),
+        )
+
+        return checkpoints[
+            checkpoint_name
+        ]
+
+    def initialize_from_checkpoint(
+        pipeline_name,
+        source_checkpoint_name,
+        target_checkpoint_name,
+    ):
+        checkpoints.setdefault(
+            target_checkpoint_name,
+            checkpoints[
+                source_checkpoint_name
+            ],
+        )
+
+        return checkpoints[
+            target_checkpoint_name
+        ]
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        get_checkpoint,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "initialize_cdc_checkpoint",
+        initialize_checkpoint,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        (
+            "initialize_cdc_checkpoint_"
+            "from_checkpoint"
+        ),
+        initialize_from_checkpoint,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: None,
+    )
+
+    head = Mock(
+        return_value=(
+            "binlog.000042",
+            157,
+        )
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_current_binlog_coordinate",
+        head,
+    )
+
+    coordinate = (
+        cdc_pipeline
+        .assert_multistage_cdc_ready()
+    )
+
+    assert coordinate == (
+        "binlog.000042",
+        157,
+    )
+
+    assert checkpoints[
+        cdc_pipeline.APPLY_CHECKPOINT_NAME
+    ] == coordinate
+
+    assert checkpoints[
+        cdc_pipeline.READ_CHECKPOINT_NAME
+    ] == coordinate
+
+    head.assert_called_once_with()
+
+
+def test_rejects_missing_apply_with_existing_read(
+    monkeypatch,
+):
+    def get_checkpoint(
+        pipeline_name,
+        checkpoint_name,
+    ):
+        if (
+            checkpoint_name
+            == cdc_pipeline
+            .READ_CHECKPOINT_NAME
+        ):
+            return (
+                "binlog.000041",
+                900,
+            )
+
+        return None
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        get_checkpoint,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: None,
+    )
+
+    head = Mock()
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_current_binlog_coordinate",
+        head,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="fresh CDC state",
+    ):
+        (
+            cdc_pipeline
+            .assert_multistage_cdc_ready()
+        )
+
+    head.assert_not_called()
+
+
+def test_rejects_missing_apply_with_batch_history(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_cdc_checkpoint",
+        lambda *args: None,
+    )
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_latest_cdc_batch_state",
+        lambda pipeline_name: {
+            "batch_id": 7,
+            "run_id": 9,
+            "status": "SUCCESS",
+            "start_binlog_file":
+                "binlog.000040",
+            "start_binlog_position": 700,
+            "end_binlog_file":
+                "binlog.000041",
+            "end_binlog_position": 900,
+        },
+    )
+
+    head = Mock()
+
+    monkeypatch.setattr(
+        cdc_pipeline,
+        "get_current_binlog_coordinate",
+        head,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="fresh CDC state",
+    ):
+        (
+            cdc_pipeline
+            .assert_multistage_cdc_ready()
+        )
+
+    head.assert_not_called()

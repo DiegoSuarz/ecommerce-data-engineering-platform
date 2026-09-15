@@ -184,7 +184,9 @@ Coordinates the multi-stage CDC execution.
 Its responsibilities include:
 
 * verifying CDC checkpoint readiness;
+* bootstrapping APPLY from the current MySQL binlog head only when CDC state is fresh;
 * initializing the READ checkpoint from APPLY when required;
+* refusing automatic bootstrap when durable CDC history already exists;
 * starting CDC audit runs and batches;
 * completing CDC audit metrics;
 * finalizing successful ETL runs;
@@ -578,6 +580,18 @@ READ == APPLY
 ```
 
 If READ is ahead of APPLY, the pipeline fails fast because durable staged work still needs to be completed.
+
+On a completely fresh CDC installation, where both checkpoints and CDC batch
+history are absent, the pipeline initializes APPLY from the current MySQL
+binary-log head and then initializes READ from APPLY.
+
+Automatic APPLY bootstrap is fail-closed. If APPLY is missing while READ or
+CDC batch history already exists, the pipeline raises an error instead of
+moving the checkpoint forward and potentially skipping durable work.
+
+Checkpoint bootstrap is idempotent. Once APPLY exists, later readiness checks
+reuse the durable coordinate rather than resetting it to the current MySQL
+binary-log head.
 
 ### Atomicity and Idempotency
 

@@ -12,6 +12,8 @@ from pymysqlreplication.event import (
     XidEvent,
 )
 
+from db import get_mysql_cdc_connection
+
 ROW_EVENT_TYPES = (
     WriteRowsEvent,
     UpdateRowsEvent,
@@ -270,6 +272,42 @@ def build_primary_key_columns_by_table(
             PRIMARY_KEY_COLUMNS_BY_TABLE_NAME.items()
         )
     }
+
+
+
+def get_current_binlog_coordinate():
+    """
+    Return the current MySQL binary-log head.
+
+    The dedicated CDC account is used because it
+    owns the replication metadata privileges.
+    """
+
+    connection = get_mysql_cdc_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        try:
+            cursor.execute(
+                "SHOW MASTER STATUS"
+            )
+
+            row = cursor.fetchone()
+
+        finally:
+            cursor.close()
+
+    finally:
+        connection.close()
+
+    if row is None:
+        raise RuntimeError(
+            "MySQL binary log status is "
+            "unavailable."
+        )
+
+    return row[0], int(row[1])
 
 
 def create_cdc_stream(
