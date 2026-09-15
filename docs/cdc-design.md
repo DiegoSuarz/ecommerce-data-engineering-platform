@@ -746,14 +746,117 @@ APPLY = binlog.000033:1120
 
 This validates successful no-op execution and checkpoint stability.
 
+### Fresh-Install Reproducibility Validation
+
+The final CDC-first architecture was also validated from a clean local
+installation after removing the persistent Docker volumes for MySQL,
+PostgreSQL, and the Airflow metadata database.
+
+The fresh infrastructure bootstrap recreated the databases and automatically
+provisioned the required Airflow connections:
+
+```text
+mysql_source
+mysql_cdc_source
+postgres_dw
+```
+
+The fresh MySQL source contained:
+
+```text
+categories = 5
+countries  = 56
+orders     = 300000
+```
+
+A Full Load then reconstructed the analytical warehouse:
+
+```text
+dim_category = 5
+dim_country  = 56
+dim_date     = 1096
+fact_sales   = 300000
+```
+
+With no existing CDC checkpoints or batch history, CDC readiness safely
+bootstrapped both durable checkpoints from the current MySQL binary-log head:
+
+```text
+READ  = binlog.000003:157
+APPLY = binlog.000003:157
+```
+
+A first zero-event CDC DagRun completed successfully without changing the
+warehouse or CDC event layers:
+
+```text
+transactions = 0
+events       = 0
+
+READ  = binlog.000003:157
+APPLY = binlog.000003:157
+```
+
+The final mutation probe captured two complete INSERT / UPDATE / DELETE
+cycles over category, country, and order records. The resulting CDC batch
+processed:
+
+```text
+transactions = 6
+events       = 18
+
+INSERT = 6
+UPDATE = 6
+DELETE = 6
+
+RAW         = 18
+TRANSFORMED = 18
+FINAL       = 18
+```
+
+The batch advanced both checkpoints atomically across the pending source
+range:
+
+```text
+start = binlog.000003:157
+end   = binlog.000003:5775
+
+READ  = binlog.000003:5775
+APPLY = binlog.000003:5775
+```
+
+The analytical warehouse preserved the resulting SCD history while the
+final DELETE removed the probe fact:
+
+```text
+dim_category = 9
+dim_country  = 60
+dim_date     = 1097
+fact_sales   = 300000
+```
+
+All probe dimension versions were historical after the final DELETE, and
+the probe order was absent from `dw.fact_sales`.
+
+A subsequent scheduled CDC run completed as a no-op at:
+
+```text
+binlog.000003:5775 -> binlog.000003:5775
+```
+
+This fresh-install validation demonstrates the complete recovery path from
+empty infrastructure through Full Load bootstrap, CDC checkpoint bootstrap,
+real Airflow execution, CDC-to-DW mutation, checkpoint convergence, and
+retry-safe no-op processing.
+
 ---
 
 ## 25. Automated Validation
 
-After the multi-stage implementation and end-to-end validation, the complete ETL test suite passed:
+At the final CDC-first baseline, after repository cleanup and fresh-install hardening, the complete ETL test suite passed:
 
 ```text
-125 passed
+122 passed
 ```
 
 Additional final checks included:

@@ -77,7 +77,7 @@ consumers.
 - Apache Airflow orchestration with explicit task dependencies.
 - Controlled failure handling and retry-safe audit behavior.
 - Automated ETL and SCD tests.
-- Fresh-database reproducibility validation.
+- Fresh-install reproducibility validated from empty Docker volumes through Full Load, CDC bootstrap, scheduled processing, and regression tests.
 - Log-based MySQL Change Data Capture for INSERT, UPDATE, and DELETE operations.
 - Transaction-aware CDC processing based on committed MySQL binlog transactions.
 - Durable RAW, TRANSFORMED, and FINAL CDC event layers in PostgreSQL.
