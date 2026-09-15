@@ -658,9 +658,11 @@ The issue was fixed by aligning the coordinator with the audit-function contract
 
 This incident demonstrated that LOAD atomicity protected the CDC data even when audit finalization failed afterward.
 
-It also identified a future hardening opportunity: checkpoint equality alone does not detect an unfinished audit finalization after APPLY has already converged with READ.
+This incident exposed a readiness gap in the original M8 design: checkpoint equality alone could not distinguish a fully finalized run from one whose LOAD commit succeeded but whose audit finalization remained incomplete.
 
-A stronger unfinished-run or unfinished-batch readiness guard may therefore be introduced in a later hardening module.
+M9 resolved this gap by extending readiness validation beyond READ/APPLY equality. The current pipeline also inspects the latest durable CDC batch state before starting a new batch and fails closed when previous CDC work is not fully finalized.
+
+The incident is retained here as historical evidence of how the CDC readiness model evolved.
 
 ---
 
@@ -876,9 +878,9 @@ The CDC DAG was then returned to active scheduling.
 
 ---
 
-## 26. Current Guarantees
+## 26. Current v0.7.0 Guarantees
 
-The M8 CDC implementation provides:
+The current CDC-first baseline provides:
 
 ```text
 ✓ log-based MySQL CDC
@@ -889,28 +891,32 @@ The M8 CDC implementation provides:
 ✓ deterministic event identity
 ✓ durable RAW staging
 ✓ durable TRANSFORMED staging
-✓ final CDC event persistence
+✓ durable FINAL event persistence
+✓ direct CDC-to-Data-Warehouse application
 ✓ READ / APPLY checkpoint separation
 ✓ atomic RAW + READ persistence
-✓ atomic FINAL + APPLY persistence
+✓ atomic FINAL + DW + APPLY persistence
 ✓ safe EOF progression
 ✓ binlog rotation support
+✓ zero-event batch support
 ✓ idempotent retries
-✓ Airflow multi-stage orchestration
+✓ committed LOAD replay safety
+✓ latest CDC batch readiness validation
+✓ safe fresh-install checkpoint bootstrap
+✓ single-consumer Airflow orchestration
 ✓ fail-stop protection for pending staged work
 ✓ audit metrics and batch lineage
 ```
 
 ---
 
-## 27. Current Limitations and Future Hardening
+## 27. Current Limitations and Future Enhancements
 
 The current implementation intentionally remains batch-oriented.
 
-Potential future improvements include:
+Remaining operational and production-oriented enhancements include:
 
 * automatic recovery of pending staged batches when `READ > APPLY`;
-* stronger readiness detection for audit-finalization failures after `READ == APPLY`;
 * operational cleanup or retention policies for RAW and TRANSFORMED CDC staging;
 * CDC lag and throughput metrics;
 * alerting for checkpoint divergence;
@@ -918,4 +924,15 @@ Potential future improvements include:
 * additional failure-injection testing;
 * production-oriented replication monitoring.
 
-These improvements belong to pipeline hardening rather than the core M8 CDC implementation.
+Pending staged work is currently protected by fail-stop semantics and recovered through controlled retry or task clearing rather than by automatically starting a new CDC batch.
+
+These items represent future operational enhancements rather than unresolved correctness gaps in the current `v0.7.0` baseline.
+
+---
+
+## 28. Operational Documentation
+
+Operational procedures are documented separately from this architecture design:
+
+* [`local-reproduction.md`](local-reproduction.md) — clean local setup, Full Load bootstrap, CDC initialization, and platform startup.
+* [`airflow-operations.md`](airflow-operations.md) — manual CDC execution, DagRun validation, cron scheduling, pause/unpause behavior, and schedule management.
