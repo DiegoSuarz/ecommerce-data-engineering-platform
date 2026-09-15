@@ -413,6 +413,8 @@ Detailed technical documentation is available in:
 * [`airflow/README.md`](airflow/README.md) — Airflow architecture, connections, DAGs, retries, and scheduling.
 * [`docs/scd-design.md`](docs/scd-design.md) — SCD strategy, temporal validity, hashing, and validation.
 * [`docs/cdc-design.md`](docs/cdc-design.md) — CDC architecture, durable stages, checkpoints, failure semantics, and end-to-end validation.
+* [`docs/local-reproduction.md`](docs/local-reproduction.md) — clean local reproduction, Full Load bootstrap, CDC initialization, and platform startup.
+* [`docs/airflow-operations.md`](docs/airflow-operations.md) — manual CDC execution, validation, scheduling, and operational procedures.
 
 ---
 
