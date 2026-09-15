@@ -39,7 +39,6 @@ ecommerce_audit_reconciliation
         └── marks stale CDC audit runs as failed
 
 ecommerce_connectivity_check
-ecommerce_smoke_test
         │
         └── operational validation
 ```
@@ -223,7 +222,7 @@ docker compose exec airflow-scheduler \
 
 ## DAGs
 
-The project currently contains four Airflow DAGs.
+The project currently contains three Airflow DAGs.
 
 
 
@@ -338,17 +337,6 @@ It verifies that Airflow can connect to:
 - PostgreSQL using `postgres_dw`.
 
 This DAG has no automatic schedule and can be triggered manually.
-
----
-
-### ecommerce_smoke_test
-
-Simple Airflow validation DAG.
-
-It verifies that the Airflow orchestration environment can successfully
-execute a task.
-
-This DAG has no automatic schedule.
 
 ---
 

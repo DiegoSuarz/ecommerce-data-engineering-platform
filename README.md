@@ -62,10 +62,8 @@ consumers.
 - `01-oltp-database` — Operational sales database implemented with MySQL.
 - `02-etl-pipelines` — Python Full Load and CDC pipelines for warehouse bootstrap and continuous synchronization.
 - `03-data-warehouse` — Dimensional Data Warehouse implemented with PostgreSQL.
-- `04-business-intelligence` — Analytical modeling and reporting with Power BI.
 - `airflow` — Workflow orchestration and monitoring with Apache Airflow.
 
-The `05-big-data` directory is retained in the repository structure, but Spark/PySpark processing is intentionally outside the current project scope.
 
 ## Implemented Features
 
@@ -188,7 +186,6 @@ The repository also contains:
 
 * `ecommerce_audit_reconciliation` — reconciles stale CDC audit executions;
 * `ecommerce_connectivity_check` — validates database connectivity;
-* `ecommerce_smoke_test` — validates the Airflow runtime environment.
 
 List the active DAG definitions directly from the current bundle with:
 

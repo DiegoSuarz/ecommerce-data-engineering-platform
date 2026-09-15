@@ -15,7 +15,7 @@ from audit import (
 )
 from db import get_postgres_connection
 from load import (
-    load_change_events,
+    insert_change_events,
     make_json_safe,
 )
 
@@ -229,13 +229,30 @@ def test_make_json_safe_rejects_unknown_type():
     ):
         make_json_safe(object())
 
-def test_load_change_event(
+def persist_change_events_for_test(
+    batch_id,
+    change_events,
+):
+    with get_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            rows_inserted = insert_change_events(
+                cursor,
+                batch_id,
+                change_events,
+            )
+
+        connection.commit()
+
+    return rows_inserted
+
+
+def test_insert_change_event(
     clean_test_change_events,
 ):
     batch_id = create_test_batch()
     change_event = build_change_event()
 
-    rows_inserted = load_change_events(
+    rows_inserted = persist_change_events_for_test(
         batch_id,
         [change_event],
     )
@@ -292,18 +309,18 @@ def test_load_change_event(
     ]
 
 
-def test_load_change_event_is_idempotent(
+def test_insert_change_event_is_idempotent(
     clean_test_change_events,
 ):
     batch_id = create_test_batch()
     change_event = build_change_event()
 
-    first_inserted = load_change_events(
+    first_inserted = persist_change_events_for_test(
         batch_id,
         [change_event],
     )
 
-    second_inserted = load_change_events(
+    second_inserted = persist_change_events_for_test(
         batch_id,
         [change_event],
     )

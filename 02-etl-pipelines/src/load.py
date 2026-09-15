@@ -520,26 +520,3 @@ def insert_change_events(
             rows_inserted += 1
 
     return rows_inserted
-
-def load_change_events(
-    batch_id,
-    change_events,
-):
-    with get_postgres_connection() as connection:
-        with connection.cursor() as cursor:
-            rows_inserted = insert_change_events(
-                cursor,
-                batch_id,
-                change_events,
-            )
-
-        connection.commit()
-
-    logger.info(
-        "CDC change events persisted. "
-        "received=%s inserted=%s",
-        len(change_events),
-        rows_inserted,
-    )
-
-    return rows_inserted
