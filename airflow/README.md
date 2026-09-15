@@ -506,15 +506,23 @@ inside one PostgreSQL transaction.
 
 This keeps durable data and checkpoint state consistent during failures and retries.
 
-### Known Hardening Area
+### Audit and Checkpoint Readiness
 
-If LOAD succeeds and advances APPLY, but `complete_cdc` fails afterward, READ and APPLY may already be equal even though the audit run is incomplete.
+Checkpoint equality alone is not sufficient to start a new CDC batch.
 
-A real validation run exposed this condition while preserving the CDC data correctly.
+The pipeline also verifies that the latest CDC batch completed successfully
+and that its recorded end coordinate matches the durable APPLY checkpoint.
 
-A stronger unfinished-run or unfinished-batch readiness check is reserved for later pipeline hardening.
+This prevents a new batch from starting when LOAD has already advanced APPLY
+but the previous audit lifecycle remains incomplete.
 
----
+Fresh checkpoint bootstrap is allowed only when APPLY and READ are both
+absent and no previous CDC batch history exists. In that state, APPLY is
+initialized from the current MySQL binary-log head and READ is initialized
+from APPLY.
+
+If partial or historical CDC state exists while APPLY is missing, the
+pipeline fails closed instead of silently moving the checkpoint forward.
 
 ## Validation
 
