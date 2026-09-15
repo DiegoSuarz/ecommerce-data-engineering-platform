@@ -2,7 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import cdc_pipeline
+from cdc import pipeline as cdc_pipeline
 
 
 def test_ready_when_read_equals_apply(

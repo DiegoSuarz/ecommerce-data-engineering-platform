@@ -272,11 +272,11 @@ The task responsibilities are:
 The DAG delegates CDC processing logic to:
 
 ```text
-02-etl-pipelines/src/cdc.py
-02-etl-pipelines/src/cdc_extract.py
-02-etl-pipelines/src/cdc_transform.py
-02-etl-pipelines/src/cdc_load.py
-02-etl-pipelines/src/cdc_pipeline.py
+02-etl-pipelines/src/cdc/stream.py
+02-etl-pipelines/src/cdc/extract.py
+02-etl-pipelines/src/cdc/transform.py
+02-etl-pipelines/src/cdc/apply.py
+02-etl-pipelines/src/cdc/pipeline.py
 ```
 
 Airflow therefore coordinates the CDC pipeline without embedding CDC business logic in the DAG itself.

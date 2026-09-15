@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import cdc_extract
+from cdc import extract as cdc_extract
 
 
 def build_transaction():

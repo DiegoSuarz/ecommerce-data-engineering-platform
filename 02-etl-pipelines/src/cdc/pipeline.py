@@ -8,14 +8,14 @@ from audit import (
     start_cdc_batch,
     start_etl_run,
 )
-from cdc_load import (
+from cdc.apply import (
     get_loaded_batch_metrics,
     get_transformed_batch_metrics,
 )
 from logger import get_logger
 
 
-logger = get_logger("cdc_pipeline")
+logger = get_logger("cdc.pipeline")
 
 
 PIPELINE_NAME = "change_data_capture"

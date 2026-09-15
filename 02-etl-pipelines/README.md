@@ -124,7 +124,7 @@ It coordinates extraction, staging loads, transformations, Data Quality checks, 
 
 
 
-### `cdc.py`
+### `cdc/stream.py`
 
 Contains the core MySQL binlog CDC primitives.
 
@@ -141,7 +141,7 @@ Its responsibilities include:
 
 Only committed source transactions are exposed for durable CDC processing.
 
-### `cdc_extract.py`
+### `cdc/extract.py`
 
 Implements the CDC EXTRACT stage.
 
@@ -153,7 +153,7 @@ cdc.raw_change_event
 
 RAW event persistence and advancement of the READ checkpoint occur in the same PostgreSQL transaction.
 
-### `cdc_transform.py`
+### `cdc/transform.py`
 
 Implements the CDC TRANSFORM stage.
 
@@ -165,9 +165,9 @@ cdc.transformed_event
 
 The transformation stage maintains lineage between each RAW event and its transformed representation.
 
-### `cdc_load.py`
+### `cdc/apply.py`
 
-Implements the CDC LOAD stage.
+Implements the CDC LOAD/APPLY stage.
 
 It validates that a batch is ready for loading, reads transformed events, and persists final events into:
 
@@ -177,7 +177,7 @@ cdc.change_event
 
 Final event persistence, analytical Data Warehouse mutation, and advancement of the APPLY checkpoint occur atomically in the same PostgreSQL transaction.
 
-### `cdc_pipeline.py`
+### `cdc/pipeline.py`
 
 Coordinates the multi-stage CDC execution.
 

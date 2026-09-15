@@ -14,7 +14,7 @@ from pymysqlreplication.row_event import (
     WriteRowsEvent,
 )
 
-from cdc import (
+from cdc.stream import (
     append_change_events,
     binlog_timestamp_to_datetime,
     build_event_key,

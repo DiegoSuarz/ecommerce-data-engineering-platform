@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-import cdc_load
+from cdc import apply as cdc_load
 
 from transform import calculate_scd2_hash
 

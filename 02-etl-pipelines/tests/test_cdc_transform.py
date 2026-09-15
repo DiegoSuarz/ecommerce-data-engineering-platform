@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import cdc_transform
+from cdc import transform as cdc_transform
 
 
 def build_raw_event(

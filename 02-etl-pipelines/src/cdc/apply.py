@@ -5,7 +5,7 @@ from audit import (
     get_cdc_checkpoint,
     upsert_cdc_checkpoint,
 )
-from cdc import is_binlog_coordinate_ahead
+from cdc.stream import is_binlog_coordinate_ahead
 from db import get_postgres_connection
 from load import insert_change_events
 from logger import get_logger
@@ -15,7 +15,7 @@ from transform import (
 )
 
 
-logger = get_logger("cdc_load")
+logger = get_logger("cdc.apply")
 
 PIPELINE_NAME = "change_data_capture"
 CHECKPOINT_NAME = "mysql_sales_binlog"
