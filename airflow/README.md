@@ -585,7 +585,7 @@ pytest -q 02-etl-pipelines/tests
 Validated result:
 
 ```text
-125 passed
+122 passed
 ```
 
 The CDC orchestration has also been validated end to end with one committed MySQL transaction containing:
