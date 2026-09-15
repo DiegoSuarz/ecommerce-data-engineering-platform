@@ -10,8 +10,32 @@ on:
   workflow_dispatch:
 
 jobs:
-  unit-tests:
+  tests:
     runs-on: ubuntu-latest
+
+    env:
+      PYTHONPATH: 02-etl-pipelines/src
+
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ecommerce_dw
+      POSTGRES_USER: ecommerce_dw_user
+      POSTGRES_PASSWORD: ecommerce_dw_password
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ecommerce_dw
+          POSTGRES_USER: ecommerce_dw_user
+          POSTGRES_PASSWORD: ecommerce_dw_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ecommerce_dw_user -d ecommerce_dw"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout repository
@@ -28,8 +52,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run test suite
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Initialize Data Warehouse
         env:
-          PYTHONPATH: 02-etl-pipelines/src
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          for file in $(find 03-data-warehouse/sql -maxdepth 1 -type f -name '*.sql' | sort); do
+            echo "Applying ${file}"
+            psql \
+              -h "$POSTGRES_HOST" \
+              -p "$POSTGRES_PORT" \
+              -U "$POSTGRES_USER" \
+              -d "$POSTGRES_DATABASE" \
+              -v ON_ERROR_STOP=1 \
+              -f "$file"
+          done
+
+      - name: Run test suite
         run: |
           python -m pytest -q 02-etl-pipelines/tests
