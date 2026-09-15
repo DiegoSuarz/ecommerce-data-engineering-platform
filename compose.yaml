@@ -22,12 +22,25 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
 
+    MYSQL_DATABASE: ${MYSQL_DATABASE}
+    MYSQL_USER: ${MYSQL_USER}
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+    MYSQL_CDC_USER: ${MYSQL_CDC_USER}
+    MYSQL_CDC_PASSWORD: ${MYSQL_CDC_PASSWORD}
+    MYSQL_CDC_SERVER_ID: ${MYSQL_CDC_SERVER_ID}
+
+    POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
   user: "${AIRFLOW_UID}:0"
 
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./02-etl-pipelines/src:/opt/airflow/etl:ro
+    - ./airflow/scripts:/opt/airflow/scripts:ro
 
   depends_on:
     airflow-postgres:
@@ -43,7 +56,9 @@ services:
       - bash
       - -c
       - |
+        set -e
         airflow db migrate
+        python /opt/airflow/scripts/bootstrap_connections.py
 
   airflow-api-server:
     <<: *airflow-common

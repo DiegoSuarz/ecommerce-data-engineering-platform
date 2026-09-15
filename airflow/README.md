@@ -163,59 +163,42 @@ This keeps database credentials outside the Python source code.
 
 ---
 
-### Creating the connections
+### Automatic connection bootstrap
 
-Load the local environment variables:
+Airflow database connections are created automatically by
+`airflow/scripts/bootstrap_connections.py`.
 
-```bash
-set -a
-source .env
-set +a
-```
+The `airflow-init` service runs the connection bootstrap immediately
+after `airflow db migrate`, so a fresh Airflow metadata database can
+reconstruct the project connections without manual CLI commands.
 
-Create the MySQL source connection:
+The bootstrap configures:
 
-```bash
-docker compose exec airflow-scheduler \
-  airflow connections add mysql_source \
-  --conn-type mysql \
-  --conn-host mysql \
-  --conn-port 3306 \
-  --conn-schema "$MYSQL_DATABASE" \
-  --conn-login "$MYSQL_USER" \
-  --conn-password "$MYSQL_PASSWORD"
-```
+* `mysql_source`;
+* `mysql_cdc_source`;
+* `postgres_dw`.
 
-Create the dedicated MySQL CDC source connection:
+Connection credentials are read from the local `.env` file through
+Docker Compose environment variables. Secrets are not stored in the
+bootstrap script or committed to Git.
 
-    docker compose exec airflow-scheduler \
-      airflow connections add mysql_cdc_source \
-      --conn-type mysql \
-      --conn-host mysql \
-      --conn-port 3306 \
-      --conn-schema "$MYSQL_DATABASE" \
-      --conn-login "$MYSQL_CDC_USER" \
-      --conn-password "$MYSQL_CDC_PASSWORD"
+The MySQL and PostgreSQL connection hosts use the Docker Compose service
+names `mysql` and `postgres`, respectively.
 
-Create the PostgreSQL data warehouse connection:
+The bootstrap is safe to rerun for the project connections. To reapply
+connection configuration after changing local credentials:
 
 ```bash
-docker compose exec airflow-scheduler \
-  airflow connections add postgres_dw \
-  --conn-type postgres \
-  --conn-host postgres \
-  --conn-port 5432 \
-  --conn-schema "$POSTGRES_DATABASE" \
-  --conn-login "$POSTGRES_USER" \
-  --conn-password "$POSTGRES_PASSWORD"
+docker compose run --rm airflow-init
 ```
 
-Verify them:
+Verify the resulting connections:
 
 ```bash
 docker compose exec airflow-scheduler \
   airflow connections list
 ```
+
 > The current authentication setup is intended for local development only.
 > Use a production-grade Airflow authentication manager for production deployments.
 
