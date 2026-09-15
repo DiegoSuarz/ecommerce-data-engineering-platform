@@ -25,7 +25,6 @@ from audit import (
     start_cdc_batch,
     start_etl_run,
 )
-from cdc_load import persist_cdc_transaction
 from db import get_postgres_connection
 
 

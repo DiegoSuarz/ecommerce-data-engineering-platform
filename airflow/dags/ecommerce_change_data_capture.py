@@ -28,15 +28,11 @@ from cdc_load import (
 )
 from cdc_pipeline import (
     complete_multistage_cdc_run,
+    fail_multistage_cdc_run,
     start_multistage_cdc_run,
 )
 from cdc_transform import (
     transform_cdc_batch,
-)
-from cdc_pipeline import (
-    complete_multistage_cdc_run,
-    fail_multistage_cdc_run,
-    start_multistage_cdc_run,
 )
 
 
